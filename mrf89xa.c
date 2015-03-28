@@ -46,6 +46,7 @@ static int mrf_open(struct inode *inode, struct file *filp) {
   if (! mrf_dev->device_opened ) {
     try_module_get(THIS_MODULE);
     mrf_dev->device_opened = 1;
+    mrf_dev->counter = 0;
     result = 0; /* success */
   } else {
     result = -EBUSY;
@@ -61,7 +62,6 @@ static int mrf_release(struct inode *inode, struct file *filp) {
 
   module_put(THIS_MODULE);
   mrf_dev->device_opened = 0;
-  mrf_dev->counter = 0;
 
   up(&mrf_dev->semaphore);
   return 0;
@@ -114,7 +114,6 @@ static void pr_spi_devices(void)
 
 static __init int mrf_init(void) {
   int result;
-  int dev_no;
   dev_t dev = 0;
   struct spi_master *master;
   int device_major;
