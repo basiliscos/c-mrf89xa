@@ -6,13 +6,13 @@
 #include <linux/spi/spi.h>
 
 #include <linux/cdev.h>
-#include <linux/slab.h> /* kmalloc() */
-#include <linux/fs.h> /* everything... */
-#include <linux/errno.h> /* error codes */
-#include <linux/types.h> /* size_t */
+#include <linux/slab.h>
+#include <linux/fs.h>
+#include <linux/errno.h>
+#include <linux/types.h>
 #include <linux/proc_fs.h>
-#include <linux/fcntl.h> /* O_ACCMODE */
-#include <asm/uaccess.h> /* copy_from/to_user */
+#include <linux/fcntl.h>
+#include <asm/uaccess.h>
 #include <linux/mutex.h>
 
 #define MRFSPI_DRV_NAME "mrfspi"
@@ -35,30 +35,22 @@ struct mrf_dev {
 
 static struct mrf_dev* mrf_dev;
 static char* device_name = "mrf";
-//static dev_t dev = 0;
-
-//static DEFINE_MUTEX(access_mutex);
-//static int device_opened = 0;
-//static int counter = 0;
 
 static int mrf_open(struct inode *inode, struct file *filp) {
   int result;
-  
+
   printk(KERN_INFO "mrf: open device\n");
 
-  //mutex_lock(&access_mutex);
   down(&mrf_dev->semaphore);
 
   if (! mrf_dev->device_opened ) {
     try_module_get(THIS_MODULE);
     mrf_dev->device_opened = 1;
-    /* success */
-    result = 0;
+    result = 0; /* success */
   } else {
     result = -EBUSY;
   }
-  
-  //mutex_unlock(&access_mutex);
+
   up(&mrf_dev->semaphore);
   return result;
 }
@@ -66,11 +58,11 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 static int mrf_release(struct inode *inode, struct file *filp) {
   printk(KERN_INFO "mrf: release device\n");
   down(&mrf_dev->semaphore);
-  
+
   module_put(THIS_MODULE);
   mrf_dev->device_opened = 0;
   mrf_dev->counter = 0;
-  
+
   up(&mrf_dev->semaphore);
   return 0;
 }
@@ -109,7 +101,7 @@ static int spi_device_found(struct device *dev, void *data)
          spi->bits_per_word, spi->mode);
 
   printk(KERN_INFO "bus no :%d\n", spi->master->bus_num);
-        
+
   return 0;
 }
 
@@ -134,27 +126,6 @@ static __init int mrf_init(void) {
   master = spi_busnum_to_master(MRFSPI_BUS_NO);
   printk(KERN_INFO " master spi found : %x \n", master);
   */
-  
-  /* dynamically allocatin major number */
-  /*
-  result =  alloc_chrdev_region(&dev, 0, 1, device_name);
-  if (result) {
-    printk(KERN_ERR "mrf: failed to register chrdev region\n");
-    goto err;
-  }
-
-  printk(KERN_INFO "mrf: allocated major device numer: %d\n", MAJOR(dev));
-  */
-  /* registering character device */
-
-  /*
-  result = register_chrdev(0, device_name, &mrf_fops);
-  if (result < 0) { 
-    printk(KERN_ERR "mrf: failed to register character device\n");
-    goto err;
-  }
-  printk(KERN_INFO "mrf: allocated major device numer: %d\n", result);
-  */
 
   result = alloc_chrdev_region(&dev, 1, 1, device_name);
   if ( result < 0 ) {
@@ -162,7 +133,7 @@ static __init int mrf_init(void) {
   }
   device_major = MAJOR(dev);
   printk(KERN_INFO "mrf: allocated major device numer: %d\n", device_major);
-  
+
   mrf_dev = kmalloc(sizeof(struct mrf_dev), GFP_KERNEL);
   if ( !mrf_dev ) {
     result = -ENOMEM;
@@ -177,7 +148,7 @@ static __init int mrf_init(void) {
   if (result) {
     goto err;
   }
-  
+
   /* all OK */
   printk(KERN_INFO "mrf: initialization succeed\n");
   return 0;
@@ -188,11 +159,8 @@ static __init int mrf_init(void) {
 }
 
 static void __exit mrf_exit(void) {
-  /*
-  unregister_chrdev(MAJOR(dev), device_name);
-  */
-  
   printk(KERN_INFO "mrf: removing module\n");
+
   cdev_del(&mrf_dev->cdev);
   kfree(mrf_dev);
 }
