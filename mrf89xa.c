@@ -17,17 +17,21 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 
-
 #define MRFSPI_DRV_NAME "mrfspi"
 #define MRFSPI_DRV_VERSION "0.1"
 #define MRFSPI_MAX_COUNTER 10
 /* raspberry pi has just 0-bus */
 #define MRFSPI_BUS_NO 0
 
+static int ignore_registers = 0;
+
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Ivan Baidakou");
 MODULE_DESCRIPTION("Microchip MRF89XA SPI Driver");
 MODULE_VERSION(MRFSPI_DRV_VERSION);
+
+module_param(ignore_registers, int, S_IRUGO);
+MODULE_PARM_DESC(ignore_registers, "Ignore initial register values on probe.");
 
 struct mrf_dev {
   struct cdev cdev;
@@ -110,7 +114,7 @@ static int mrfdev_probe(struct spi_device *spi) {
     u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
     u8 expected = default_register_values[i];
     printk(KERN_INFO "mrf: probing %d register. Got: %.2x, expected: %.2x\n", i, got, expected);
-    mrf_found &= (got == expected);
+    mrf_found &= ((got == expected) | ignore_registers);
   }
   if (mrf_found) {
     /* success */
