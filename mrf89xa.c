@@ -37,7 +37,7 @@ struct mrf_dev {
   struct spi_device *spi;
 };
 
-struct spi_device* spi_device;
+struct spi_device* spi_device = NULL;
 
 static int mrf_open(struct inode *inode, struct file *filp) {
   /* int result; */
@@ -98,7 +98,7 @@ static struct file_operations mrf_fops = {
 
 #define CMD_READ_REGISTER(N) (0x40 | (N << 1))
 
-static u8 default_register_values[] = { 0x36, 0x84, 0x04 };
+static u8 default_register_values[] = { 0x28, 0x88, 0x03, 0x07, 0x0C, 0x0F };
 
 static int mrfdev_probe(struct spi_device *spi) {
   u8 i;
@@ -116,6 +116,7 @@ static int mrfdev_probe(struct spi_device *spi) {
     /* success */
     printk(KERN_INFO "mrf: device found\n");
     status = 0;
+    spi_device = spi;
   }
   else {
     status = -ENODEV;
@@ -125,8 +126,6 @@ static int mrfdev_probe(struct spi_device *spi) {
 
 static int mrfdev_remove(struct spi_device *spi)
 {
-  struct mrf_dev* mrf_dev = NULL;
-  dev_t device_id;
   printk(KERN_INFO "mrf: dev_remove\n");
   return 0;
 }
@@ -150,7 +149,9 @@ static struct spi_board_info mrf_board_info = {
 
 static __init int mrf_init(void) {
   int status;
+  int driver_registered = 0;
   struct spi_master *master;
+  struct spi_device *spi;
   struct mrf_dev* mrf_dev = NULL;
   dev_t device_id = 0;
 
@@ -163,8 +164,8 @@ static __init int mrf_init(void) {
   }
 
   /* insert new spi device */
-  spi_device = spi_new_device(master, &mrf_board_info);
-  if (!spi_device) {
+  spi = spi_new_device(master, &mrf_board_info);
+  if (!spi) {
     printk(KERN_INFO "mrf: cannot add new spi device\n");
     status = -ENODEV;
     goto err;
@@ -176,6 +177,16 @@ static __init int mrf_init(void) {
     printk(KERN_INFO "mrf: spi_register_driver failed\n");
     goto err;
   }
+  driver_registered = 1;
+
+  /* check that probe succeed */
+  if (!spi_device) {
+    printk(KERN_INFO "mrf: device hasn't been probed successfully\n");
+    status = -ENODEV;
+    goto err;
+  }
+  /* from here spi and spi_device point the same */
+  printk(KERN_INFO "mrf: spi device found\n");
 
   /* allocate memory for mrf device */
   mrf_dev = kzalloc(sizeof(struct mrf_dev), GFP_KERNEL);
@@ -213,9 +224,11 @@ static __init int mrf_init(void) {
   return 0;
 
  err:
+  printk(KERN_INFO "mrf: failed\n");
   if (device_id) unregister_chrdev_region(device_id, 1);
   if (mrf_dev) kfree(mrf_dev);
-  if (spi_device) spi_unregister_device(spi_device);
+  if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
+  if (spi) spi_unregister_device(spi_device);
   return status;
 }
 
