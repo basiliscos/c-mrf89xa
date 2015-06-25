@@ -17,6 +17,11 @@
 #include <linux/of.h>
 #include <linux/of_device.h>
 
+#include <linux/gpio/consumer.h>
+#include <linux/gpio.h>
+
+#include "mrf89xa.h"
+
 #define MRFSPI_DRV_NAME "mrfspi"
 #define MRFSPI_DRV_VERSION "0.1"
 #define MRFSPI_MAX_COUNTER 10
@@ -39,6 +44,8 @@ struct mrf_dev {
   int counter;
   int device_opened;
   struct spi_device *spi;
+  struct gpio_desc *config_pin;
+  struct gpio_desc *data_pin;
 };
 
 struct spi_device* spi_device = NULL;
@@ -100,7 +107,6 @@ static struct file_operations mrf_fops = {
  release: mrf_release
 };
 
-#define CMD_READ_REGISTER(N) (0x40 | (N << 1))
 
 static u8 default_register_values[] = { 0x28, 0x88, 0x03, 0x07, 0x0C, 0x0F };
 
@@ -108,8 +114,13 @@ static int mrfdev_probe(struct spi_device *spi) {
   u8 i;
   u8 mrf_found = 1;
   int status;
+  struct mrf_dev* mrf_dev;
 
   printk(KERN_INFO "mrf: probing spi device for mrf presence\n");
+  mrf_dev = (struct mrf_dev*) spi_get_drvdata(spi);
+
+  gpiod_set_value(mrf_dev->config_pin, 0);
+  gpiod_set_value(mrf_dev->data_pin, 0);
   for (i = 0; i < ARRAY_SIZE(default_register_values); i++) {
     u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
     u8 expected = default_register_values[i];
@@ -155,7 +166,7 @@ static __init int mrf_init(void) {
   int status;
   int driver_registered = 0;
   struct spi_master *master;
-  struct spi_device *spi;
+  struct spi_device *spi = NULL;
   struct mrf_dev* mrf_dev = NULL;
   dev_t device_id = 0;
 
@@ -177,29 +188,32 @@ static __init int mrf_init(void) {
     goto err;
   }
 
-  /* register and probe mrf device connection via spi */
-  status = spi_register_driver(&mrfdev_spi_driver);
-  if (status < 0) {
-    printk(KERN_INFO "mrf: spi_register_driver failed\n");
-    goto err;
-  }
-  driver_registered = 1;
-
-  /* check that probe succeed */
-  if (!spi_device) {
-    printk(KERN_INFO "mrf: device hasn't been probed successfully\n");
-    status = -ENODEV;
-    goto err;
-  }
-  /* from here spi and spi_device point the same */
-  printk(KERN_INFO "mrf: spi device found\n");
-
   /* allocate memory for mrf device */
   mrf_dev = kzalloc(sizeof(struct mrf_dev), GFP_KERNEL);
   if ( !mrf_dev ) {
     status = -ENOMEM;
     goto err;
   }
+
+  /* allocate control and data GPIO pins */
+  //mrf_dev->config_pin = gpiod_get(NULL, CSCON_NAME, GPIOD_OUT_LOW);
+  mrf_dev->config_pin = gpio_to_desc(CSCON_PIN);
+  if (IS_ERR(mrf_dev->config_pin)) {
+    printk(KERN_INFO "mrf: cannot get config_pin(%d)\n", CSCON_PIN);
+    status = -ENODEV;
+    goto err;
+  }
+  gpiod_direction_output(mrf_dev->config_pin, 0);
+  gpiod_set_value(mrf_dev->config_pin, 0);
+
+  mrf_dev->data_pin = gpio_to_desc(DATA_PIN);
+  if (IS_ERR(mrf_dev->data_pin)) {
+    printk(KERN_INFO "mrf: cannot get data_pin(%d)\n", DATA_PIN);
+    status = -ENODEV;
+    goto err;
+  }
+  gpiod_direction_output(mrf_dev->data_pin, 0);
+  gpiod_set_value(mrf_dev->data_pin, 0);
 
   /* characted device allocation */
   status = alloc_chrdev_region(&device_id, 1, 1, "mrf");
@@ -214,16 +228,32 @@ static __init int mrf_init(void) {
   cdev_init(&mrf_dev->cdev, &mrf_fops);
   mrf_dev->cdev.owner = THIS_MODULE;
   mrf_dev->cdev.ops = &mrf_fops;
-  mrf_dev->spi = spi_device;
+  mrf_dev->spi = spi;
 
   /* add character device */
+  printk(KERN_INFO "mrf: adding character device\n");
   status = cdev_add(&mrf_dev->cdev, device_id, 1);
   if (status) {
     printk(KERN_INFO "mrf: cannot add character deviced\n");
     goto err;
   }
+  spi_set_drvdata(spi, mrf_dev);
 
-  spi_set_drvdata(spi_device, mrf_dev);
+  /* register and probe mrf device connection via spi */
+  status = spi_register_driver(&mrfdev_spi_driver);
+  if (status < 0) {
+    printk(KERN_INFO "mrf: spi_register_driver failed\n");
+    goto err;
+  }
+  driver_registered = 1;
+  /* check that probe succeed */
+  if (!spi_device) {
+    printk(KERN_INFO "mrf: device hasn't been probed successfully\n");
+    status = -ENODEV;
+    goto err;
+  }
+  /* from here spi and spi_device point the same */
+  printk(KERN_INFO "mrf: spi device found\n");
 
   /* all OK */
   printk(KERN_INFO "mrf: initialization succeed\n");
@@ -231,7 +261,10 @@ static __init int mrf_init(void) {
 
  err:
   printk(KERN_INFO "mrf: failed\n");
+  if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
   if (device_id) unregister_chrdev_region(device_id, 1);
+  if (mrf_dev && mrf_dev->config_pin && !IS_ERR(mrf_dev->config_pin)) gpiod_put(mrf_dev->config_pin);
+  if (mrf_dev && mrf_dev->data_pin && IS_ERR(mrf_dev->data_pin)) gpiod_put(mrf_dev->data_pin);
   if (mrf_dev) kfree(mrf_dev);
   if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
   if (spi) spi_unregister_device(spi);
@@ -252,6 +285,9 @@ static void __exit mrf_exit(void) {
 
   unregister_chrdev_region(device_id, 1);
   printk(KERN_INFO "mrf: character device deallocated\n");
+
+  gpiod_put(mrf_dev->config_pin);
+  gpiod_put(mrf_dev->data_pin);
 
   kfree(mrf_dev);
   spi_set_drvdata(spi_device, NULL);
