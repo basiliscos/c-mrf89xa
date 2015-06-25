@@ -114,9 +114,9 @@ static int mrfdev_probe(struct spi_device *spi) {
     u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
     u8 expected = default_register_values[i];
     printk(KERN_INFO "mrf: probing %d register. Got: %.2x, expected: %.2x\n", i, got, expected);
-    mrf_found &= ((got == expected) | ignore_registers);
+    mrf_found &= (got == expected);
   }
-  if (mrf_found) {
+  if (mrf_found | ignore_registers) {
     /* success */
     printk(KERN_INFO "mrf: device found\n");
     status = 0;
@@ -158,6 +158,8 @@ static __init int mrf_init(void) {
   struct spi_device *spi;
   struct mrf_dev* mrf_dev = NULL;
   dev_t device_id = 0;
+
+  printk(KERN_INFO "mrf: loading module (ignore_registers = %d)\n", ignore_registers);
 
   /* look up for spi master */
   master = spi_busnum_to_master(MRFSPI_BUS_NO);
@@ -232,7 +234,7 @@ static __init int mrf_init(void) {
   if (device_id) unregister_chrdev_region(device_id, 1);
   if (mrf_dev) kfree(mrf_dev);
   if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
-  if (spi) spi_unregister_device(spi_device);
+  if (spi) spi_unregister_device(spi);
   return status;
 }
 
