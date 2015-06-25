@@ -253,7 +253,8 @@ static __init int mrf_init(void) {
     goto err;
   }
   /* from here spi and spi_device point the same */
-  printk(KERN_INFO "mrf: spi device found\n");
+  printk(KERN_INFO "mrf: spi device found, max speed = %dKHz, chip select = %d\n",
+         mrf_board_info.max_speed_hz, mrf_board_info.chip_select);
 
   /* all OK */
   printk(KERN_INFO "mrf: initialization succeed\n");
