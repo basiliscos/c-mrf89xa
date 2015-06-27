@@ -55,7 +55,7 @@ static int mrf_open(struct inode *inode, struct file *filp) {
   int status;
   struct mrf_dev *mrf_dev = container_of(&spi_device, struct mrf_dev, spi);
 
-  printk(KERN_INFO "mrf: open device\n");
+  printk(KERN_INFO "mrf: open device %p (opened = %d)\n", mrf_dev, mrf_dev->device_opened);
 
   down(&mrf_dev->device_semaphore);
 
@@ -72,13 +72,14 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 }
 
 static int mrf_release(struct inode *inode, struct file *filp) {
-  /* printk(KERN_INFO "mrf: release device\n"); */
-  /* down(&mrf_dev->semaphore); */
+  struct mrf_dev *mrf_dev = container_of(&spi_device, struct mrf_dev, spi);
+  printk(KERN_INFO "mrf: release device\n");
+  down(&mrf_dev->device_semaphore);
 
-  /* module_put(THIS_MODULE); */
-  /* mrf_dev->device_opened = 0; */
+  module_put(THIS_MODULE);
+  mrf_dev->device_opened = 0;
 
-  /* up(&mrf_dev->semaphore); */
+  up(&mrf_dev->device_semaphore);
   return 0;
 }
 
@@ -155,7 +156,7 @@ static int mrfdev_probe(struct spi_device *spi) {
   int status;
   struct mrf_dev* mrf_dev;
 
-  printk(KERN_INFO "mrf: probing spi device for mrf presence\n");
+  printk(KERN_INFO "mrf: probing spi device %p for mrf presence\n", spi);
   mrf_dev = (struct mrf_dev*) spi_get_drvdata(spi);
 
   gpiod_set_value(mrf_dev->config_pin, 0);
@@ -226,6 +227,7 @@ static __init int mrf_init(void) {
     status = -ENODEV;
     goto err;
   }
+  printk(KERN_INFO "mrf: inserted spi device %p\n", spi);
 
   /* allocate memory for mrf device */
   mrf_dev = kzalloc(sizeof(struct mrf_dev), GFP_KERNEL);
@@ -233,6 +235,8 @@ static __init int mrf_init(void) {
     status = -ENOMEM;
     goto err;
   }
+  printk(KERN_INFO "mrf: allocated device structure %p\n",mrf_dev);
+
 
   /* allocate control and data GPIO pins */
   //mrf_dev->config_pin = gpiod_get(NULL, CSCON_NAME, GPIOD_OUT_LOW);
@@ -269,6 +273,7 @@ static __init int mrf_init(void) {
   mrf_dev->cdev.owner = THIS_MODULE;
   mrf_dev->cdev.ops = &mrf_fops;
   mrf_dev->spi = spi;
+  mrf_dev->device_opened = 0;
 
   /* add character device */
   printk(KERN_INFO "mrf: adding character device\n");
