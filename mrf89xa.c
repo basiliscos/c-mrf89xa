@@ -41,6 +41,7 @@ MODULE_PARM_DESC(ignore_registers, "Ignore initial register values on probe.");
 struct mrf_dev {
   struct cdev cdev;
   struct semaphore device_semaphore;
+  int device_found;
   int device_opened;
 
   struct semaphore operation_semaphore;
@@ -49,37 +50,35 @@ struct mrf_dev {
   struct gpio_desc *data_pin;
 };
 
-struct spi_device* spi_device = NULL;
+struct mrf_dev *mrf_device = NULL;
 
 static int mrf_open(struct inode *inode, struct file *filp) {
   int status;
-  struct mrf_dev *mrf_dev = container_of(&spi_device, struct mrf_dev, spi);
 
-  printk(KERN_INFO "mrf: open device %p (opened = %d)\n", mrf_dev, mrf_dev->device_opened);
+  printk(KERN_INFO "mrf: open device %p (opened = %d)\n", mrf_device, mrf_device->device_opened);
 
-  down(&mrf_dev->device_semaphore);
+  down(&mrf_device->device_semaphore);
 
-  if (! mrf_dev->device_opened ) {
+  if (! mrf_device->device_opened ) {
     try_module_get(THIS_MODULE);
-    mrf_dev->device_opened = 1;
+    mrf_device->device_opened = 1;
     status = 0; /* success */
   } else {
     status = -EBUSY;
   }
 
-  up(&mrf_dev->device_semaphore);
+  up(&mrf_device->device_semaphore);
   return status;
 }
 
 static int mrf_release(struct inode *inode, struct file *filp) {
-  struct mrf_dev *mrf_dev = container_of(&spi_device, struct mrf_dev, spi);
   printk(KERN_INFO "mrf: release device\n");
-  down(&mrf_dev->device_semaphore);
+  down(&mrf_device->device_semaphore);
 
   module_put(THIS_MODULE);
-  mrf_dev->device_opened = 0;
+  mrf_device->device_opened = 0;
 
-  up(&mrf_dev->device_semaphore);
+  up(&mrf_device->device_semaphore);
   return 0;
 }
 
@@ -124,8 +123,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     status = !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
   if (status) return -EFAULT;
 
-  mrf_dev = container_of(&spi_device, struct mrf_dev, spi);
-  down(&mrf_dev->operation_semaphore);
+  down(&mrf_device->operation_semaphore);
   switch(cmd) {
   case MRF_IOCRESET:
     reset_pin = gpio_to_desc(RESET_PIN);
@@ -144,7 +142,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     return -ENOTTY;
   };
  finish:
-  up(&mrf_dev->operation_semaphore);
+  up(&mrf_device->operation_semaphore);
   return status;
 }
 
@@ -154,13 +152,11 @@ static int mrfdev_probe(struct spi_device *spi) {
   u8 i;
   u8 mrf_found = 1;
   int status;
-  struct mrf_dev* mrf_dev;
 
   printk(KERN_INFO "mrf: probing spi device %p for mrf presence\n", spi);
-  mrf_dev = (struct mrf_dev*) spi_get_drvdata(spi);
 
-  gpiod_set_value(mrf_dev->config_pin, 0);
-  gpiod_set_value(mrf_dev->data_pin, 0);
+  gpiod_set_value(mrf_device->config_pin, 0);
+  gpiod_set_value(mrf_device->data_pin, 0);
   for (i = 0; i < ARRAY_SIZE(default_register_values); i++) {
     u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
     u8 expected = default_register_values[i];
@@ -171,7 +167,7 @@ static int mrfdev_probe(struct spi_device *spi) {
     /* success */
     printk(KERN_INFO "mrf: device found\n");
     status = 0;
-    spi_device = spi;
+    mrf_device->device_found = 1;
   }
   else {
     status = -ENODEV;
@@ -220,15 +216,6 @@ static __init int mrf_init(void) {
     goto err;
   }
 
-  /* insert new spi device */
-  spi = spi_new_device(master, &mrf_board_info);
-  if (!spi) {
-    printk(KERN_INFO "mrf: cannot add new spi device\n");
-    status = -ENODEV;
-    goto err;
-  }
-  printk(KERN_INFO "mrf: inserted spi device %p\n", spi);
-
   /* allocate memory for mrf device */
   mrf_dev = kzalloc(sizeof(struct mrf_dev), GFP_KERNEL);
   if ( !mrf_dev ) {
@@ -237,6 +224,14 @@ static __init int mrf_init(void) {
   }
   printk(KERN_INFO "mrf: allocated device structure %p\n",mrf_dev);
 
+  /* insert new spi device, which actually could be a proxy */
+  spi = spi_new_device(master, &mrf_board_info);
+  if (!spi) {
+    printk(KERN_INFO "mrf: cannot add new spi device\n");
+    status = -ENODEV;
+    goto err;
+  }
+  printk(KERN_INFO "mrf: inserted spi device %p\n", spi);
 
   /* allocate control and data GPIO pins */
   //mrf_dev->config_pin = gpiod_get(NULL, CSCON_NAME, GPIOD_OUT_LOW);
@@ -273,7 +268,10 @@ static __init int mrf_init(void) {
   mrf_dev->cdev.owner = THIS_MODULE;
   mrf_dev->cdev.ops = &mrf_fops;
   mrf_dev->spi = spi;
+  mrf_dev->device_found = 0;
   mrf_dev->device_opened = 0;
+
+  mrf_device = mrf_dev;
 
   /* add character device */
   printk(KERN_INFO "mrf: adding character device\n");
@@ -292,7 +290,7 @@ static __init int mrf_init(void) {
   }
   driver_registered = 1;
   /* check that probe succeed */
-  if (!spi_device) {
+  if (!mrf_device->device_found) {
     printk(KERN_INFO "mrf: device hasn't been probed successfully\n");
     status = -ENODEV;
     goto err;
@@ -311,39 +309,40 @@ static __init int mrf_init(void) {
   if (device_id) unregister_chrdev_region(device_id, 1);
   if (mrf_dev && mrf_dev->config_pin && !IS_ERR_OR_NULL(mrf_dev->config_pin)) gpiod_put(mrf_dev->config_pin);
   if (mrf_dev && mrf_dev->data_pin && !IS_ERR_OR_NULL(mrf_dev->data_pin)) gpiod_put(mrf_dev->data_pin);
-  if (mrf_dev) kfree(mrf_dev);
   if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
   if (spi) spi_unregister_device(spi);
+  if (mrf_dev) kfree(mrf_dev);
+  mrf_device = NULL;
   return status;
 }
 
 static void __exit mrf_exit(void) {
-  struct mrf_dev* mrf_dev;
   dev_t device_id;
   printk(KERN_INFO "mrf: removing module\n");
   /* TODO: check errors */
 
-  mrf_dev = (struct mrf_dev*) spi_get_drvdata(spi_device);
-  device_id = mrf_dev->cdev.dev;
+  device_id = mrf_device->cdev.dev;
 
-  cdev_del(&mrf_dev->cdev);
+  cdev_del(&mrf_device->cdev);
   printk(KERN_INFO "mrf: character device removed\n");
 
   unregister_chrdev_region(device_id, 1);
   printk(KERN_INFO "mrf: character device deallocated\n");
 
-  gpiod_put(mrf_dev->config_pin);
-  gpiod_put(mrf_dev->data_pin);
+  gpiod_put(mrf_device->config_pin);
+  gpiod_put(mrf_device->data_pin);
 
-  kfree(mrf_dev);
-  spi_set_drvdata(spi_device, NULL);
+  spi_set_drvdata(mrf_device->spi, NULL);
   printk(KERN_INFO "mrf: mrf device memory deallocated\n");
 
   spi_unregister_driver(&mrfdev_spi_driver);
   printk(KERN_INFO "mrf: spi driver unregistered\n");
 
-  spi_unregister_device(spi_device);
+  spi_unregister_device(mrf_device->spi);
   printk(KERN_INFO "mrf: spi device unregistered\n");
+
+  kfree(mrf_device);
+  mrf_device = NULL;
 }
 
 
