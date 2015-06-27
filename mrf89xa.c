@@ -114,7 +114,6 @@ static struct file_operations mrf_fops = {
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
   int status = 0;
   struct gpio_desc *reset_pin;
-  struct mrf_dev *mrf_dev;
 
   if (_IOC_TYPE(cmd) != MRF_IOC_MAGIC) return -ENOTTY;
   if (_IOC_NR(cmd) > MRF_IOC_MAXNR) return -ENOTTY;
