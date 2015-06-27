@@ -28,6 +28,8 @@
 #define MRFSPI_DRV_VERSION "0.1"
 #define MRFSPI_MAX_COUNTER 10
 
+long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
+
 static int ignore_registers = 0;
 
 MODULE_LICENSE("GPL");

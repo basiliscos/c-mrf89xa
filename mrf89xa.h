@@ -24,6 +24,4 @@
 #define CMD_READ_REGISTER(N) (0x40 | (N << 1))
 
 
-long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
-
 #endif /* __MRF89XA_H */
