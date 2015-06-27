@@ -115,6 +115,8 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   int status = 0;
   struct gpio_desc *reset_pin;
 
+  printk(KERN_INFO "mrf: ioctl (%d)\n", cmd);
+
   if (_IOC_TYPE(cmd) != MRF_IOC_MAGIC) return -ENOTTY;
   if (_IOC_NR(cmd) > MRF_IOC_MAXNR) return -ENOTTY;
 
@@ -125,6 +127,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   if (status) return -EFAULT;
 
   down(&mrf_device->operation_semaphore);
+  printk(KERN_INFO "mrf: ioctl switch\n");
   switch(cmd) {
   case MRF_IOCRESET:
     reset_pin = gpio_to_desc(RESET_PIN);
@@ -133,17 +136,21 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
       status = -EFAULT;
       goto finish;
     }
+    gpiod_direction_output(reset_pin, 1);
     gpiod_set_value(reset_pin, 1);
     /* wait until mrf device reset */
     msleep(RESET_DELAY);
     gpiod_set_value(reset_pin, 0);
     gpiod_put(reset_pin);
+    status = 0;
+    printk(KERN_INFO "mrf: device reset successfull\n");
     break;
   default:  /* redundant, as cmd was checked against MAXNR */
     return -ENOTTY;
   };
  finish:
   up(&mrf_device->operation_semaphore);
+  printk(KERN_INFO "mrf: ioctl result: %d\n", status);
   return status;
 }
 
@@ -201,7 +208,7 @@ static struct spi_board_info mrf_board_info = {
 
 static __init int mrf_init(void) {
   int status;
-  int driver_registered = 0;
+  int driver_registered = 0, cdev_added = 0;
   struct spi_master *master;
   struct spi_device *spi = NULL;
   struct mrf_dev* mrf_dev = NULL;
@@ -281,7 +288,7 @@ static __init int mrf_init(void) {
     printk(KERN_INFO "mrf: cannot add character deviced\n");
     goto err;
   }
-  spi_set_drvdata(spi, mrf_dev);
+  cdev_added = 1;
 
   /* register and probe mrf device connection via spi */
   status = spi_register_driver(&mrfdev_spi_driver);
@@ -307,10 +314,10 @@ static __init int mrf_init(void) {
  err:
   printk(KERN_INFO "mrf: failed\n");
   if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
+  if (cdev_added) cdev_del(&mrf_device->cdev);
   if (device_id) unregister_chrdev_region(device_id, 1);
   if (mrf_dev && mrf_dev->config_pin && !IS_ERR_OR_NULL(mrf_dev->config_pin)) gpiod_put(mrf_dev->config_pin);
   if (mrf_dev && mrf_dev->data_pin && !IS_ERR_OR_NULL(mrf_dev->data_pin)) gpiod_put(mrf_dev->data_pin);
-  if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
   if (spi) spi_unregister_device(spi);
   if (mrf_dev) kfree(mrf_dev);
   mrf_device = NULL;
@@ -333,7 +340,6 @@ static void __exit mrf_exit(void) {
   gpiod_put(mrf_device->config_pin);
   gpiod_put(mrf_device->data_pin);
 
-  spi_set_drvdata(mrf_device->spi, NULL);
   printk(KERN_INFO "mrf: mrf device memory deallocated\n");
 
   spi_unregister_driver(&mrfdev_spi_driver);

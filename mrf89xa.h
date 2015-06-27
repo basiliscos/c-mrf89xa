@@ -11,7 +11,7 @@
 #define DATA_PIN  25
 
 /* in milliseconds */
-#define RESET_DELAY 1
+#define RESET_DELAY 1000
 
 #define MRF_IOC_MAGIC 'n'
 
