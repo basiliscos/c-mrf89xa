@@ -10,8 +10,9 @@
 #define RESET_PIN 24
 #define DATA_PIN  25
 
-/* in milliseconds */
-#define RESET_DELAY 1000
+/* in microseconds */
+#define RESET_DELAY 100
+#define RESET_WAIT  6000
 
 #define MRF_IOC_MAGIC 'n'
 

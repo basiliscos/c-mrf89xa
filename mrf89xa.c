@@ -142,6 +142,9 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     msleep(RESET_DELAY);
     gpiod_set_value(reset_pin, 0);
     gpiod_put(reset_pin);
+    /* wait until mrf device reset */
+    msleep(RESET_DELAY);
+
     status = 0;
     printk(KERN_INFO "mrf: device reset successfull\n");
     break;
