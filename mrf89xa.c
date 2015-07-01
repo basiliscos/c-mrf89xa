@@ -54,6 +54,43 @@ struct mrf_dev {
 
 struct mrf_dev *mrf_device = NULL;
 
+static u8 por_register_values[] = { 0x28, 0x88, 0x03, 0x07, 0x0C, 0x0F };
+
+static u8 default_register_values[] = {
+  /* 0 == REG_GCON         */ CHIPMODE_STBYMODE | FREQBAND_950_863 | VCO_TRIM_11,
+  /* 1 == REG_DMOD         */ MODSEL_FSK | DATAMODE_PACKET | IFGAIN_0,
+  /* 1 == REG_FDEV         */ FREGDEV_80,
+  /* 3 == REG_BRS          */ BITRATE_25,
+  /* 4 == REG_FLTH         */ 0 /* unused with FSK-modulation */,
+  /* 5 == REG_FIFO         */ FIFOSIZE_64,
+  /* 6, unused             */ 0,
+  /* 7, unused             */ 0,
+  /* 8, unused             */ 0,
+  /* 9, unused             */ 0,
+  /* 10, unused            */ 0,
+  /* 11, unused            */ 0,
+  /* 12 == REG_PAC         */ 0, /* unused with FSK-modulation  */
+  /* 13 == REG_FTXRXI      */ IRQ0_RX_STDBY_SYNCADRS | IRQ1_RX_STDBY_CRCOK | IRQ1_TX_TXDONE,
+  /* 14 == REG_FTPRI       */ DEF_IRQPARAM1 | IRQ0_TX_START_FIFONOTEMPTY | IRQ1_PLL_LOCK_PIN_ON,
+  /* 15, unused            */ 0,
+  /* 16 == REG_FILC        */ PASSIVEFILT_378 | RXFC_FOPLUS100,
+  /* 17 == REG_PFC         */ FO_100,
+  /* 18 == REG_SYNC        */ SYNC_SIZE_32 | SYNC_ON | SYNC_ERRORS_0,
+  /* 19, reserved          */ DEF_RXPARAM3,
+  /* 20, r/0               */ 0,
+  /* 21, unused            */ 0 /* unused with FSK-modulation */,
+  /* 22 == REG_SYNC_WORD_1 */ 0 /* to be defined later */,
+  /* 23 == REG_SYNC_WORD_2 */ 0 /* to be defined later */,
+  /* 24 == REG_SYNC_WORD_3 */ 0 /* to be defined later */,
+  /* 25 == REG_SYNC_WORD_4 */ 0 /* to be defined later */,
+  /* 26 == REG_TXCON       */ FC_400 | TXPOWER_13,
+  /* 27 == REG_CLKOUT      */ CLKOUT_ON | CLKOUT_12800,
+  /* 28 == REG_PLOAD       */ MANCHESTER_OFF | PAYLOAD_64,
+  /* 29 == REG_NADDS       */ 0 /* to be defined later */,
+  /* 30 == REG_PKTC        */ PKT_FORMAT_VARIABLE | PREAMBLE_SIZE_4 | WHITENING_OFF | CRC_ON | ADRSFILT_ME_AND_00_AND_FF,
+  /* 31 == REG_FCRC        */ FIFO_AUTOCLR_ON | FIFO_STBY_ACCESS_WRITE,
+};
+
 static int mrf_open(struct inode *inode, struct file *filp) {
   int status;
 
@@ -110,6 +147,28 @@ static struct file_operations mrf_fops = {
  .unlocked_ioctl = mrf_ioctl_unlocked,
 };
 
+static int write_register(u8 index, u8 value) {
+  u8 buff[] = {index << 1, value};
+  gpiod_set_value(mrf_device->config_pin, 0);
+  gpiod_set_value(mrf_device->data_pin, 0);
+  return spi_write(mrf_device->spi, buff, ARRAY_SIZE(buff));
+}
+
+static int initialize_registers(void) {
+  int i;
+  int status;
+  printk(KERN_INFO "mrf: initializing registers\n");
+  for (i = 0; i < ARRAY_SIZE(default_register_values); i++) {
+    status = write_register((u8)i, default_register_values[i]);
+    if (status) goto err;
+  }
+  printk(KERN_INFO "mrf: registers initialized\n");
+  return 0; /* success */
+ err:
+  printk(KERN_INFO "mrf: registers initialization failed\n");
+  return status;
+}
+
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
   int status = 0;
@@ -144,8 +203,8 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     gpiod_put(reset_pin);
     /* wait until mrf device reset */
     msleep(RESET_DELAY);
-
-    status = 0;
+    status = initialize_registers();
+    if (status) goto finish;
     printk(KERN_INFO "mrf: device reset successfull\n");
     break;
   default:  /* redundant, as cmd was checked against MAXNR */
@@ -157,7 +216,6 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   return status;
 }
 
-static u8 default_register_values[] = { 0x28, 0x88, 0x03, 0x07, 0x0C, 0x0F };
 
 static int mrfdev_probe(struct spi_device *spi) {
   u8 i;
@@ -168,9 +226,9 @@ static int mrfdev_probe(struct spi_device *spi) {
 
   gpiod_set_value(mrf_device->config_pin, 0);
   gpiod_set_value(mrf_device->data_pin, 0);
-  for (i = 0; i < ARRAY_SIZE(default_register_values); i++) {
+  for (i = 0; i < ARRAY_SIZE(por_register_values); i++) {
     u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
-    u8 expected = default_register_values[i];
+    u8 expected = por_register_values[i];
     printk(KERN_INFO "mrf: probing %d register. Got: %.2x, expected: %.2x\n", i, got, expected);
     mrf_found &= (got == expected);
   }
