@@ -41,6 +41,9 @@
 #define REG_BRS         0x03
 #define REG_FLTH        0x04
 #define REG_FIFO        0x05
+#define REG_R1C         0x06
+#define REG_P1C         0x07
+#define REG_S1C         0x08
 #define REG_PAC         0x0C
 #define REG_FTXRXI      0x0D
 #define REG_FTPRI       0x0E
@@ -148,25 +151,7 @@
 #define TXPOWER_5					0x0C
 #define TXPOWER_8					0x0E
 
-#define CLKOUT_ON                 0x80
 #define CLKOUT_OFF                0x00
-
-#define CLKOUT_12800              0x00
-#define CLKOUTint64_t00           0x04
-#define CLKOUT_3200               0x08
-#define CLKOUT_2133               0x0C
-#define CLKOUT_1600               0x10
-#define CLKOUT_1280               0x14
-#define CLKOUT_1067               0x18
-#define CLKOUT_914                0x1C
-#define CLKOUT_800                0x20
-#define CLKOUT_711                0x24
-#define CLKOUT_64		          0x28
-#define CLKOUT_582                0x2C
-#define CLKOUT_533                0x30
-#define CLKOUT_492                0x34
-#define CLKOUT_457                0x38
-#define CLKOUT_427                0x3C
 
 #define MANCHESTER_ON				0x80
 #define MANCHESTER_OFF				0x00
