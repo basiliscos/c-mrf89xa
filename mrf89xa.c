@@ -231,6 +231,12 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
       mrf_device->state |= MRF_STATE_FREQASSIGNED;
     }
     break;
+  case MRF_IOC_SETPOWER:
+    {
+      uint8_t power_level = (uint8_t) arg;
+      write_register_protected(REG_TXCON, (FC_400 | MRF_TXPOWER_PLUS_13));
+    }
+    break;
   default:  /* redundant, as cmd was checked against MAXNR */
     return -ENOTTY;
   };

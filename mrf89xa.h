@@ -24,10 +24,11 @@ typedef struct mrf_address {
 
 #define MRF_IOC_MAGIC 'n'
 
-#define MRF_IOC_RESET   _IO(MRF_IOC_MAGIC, 0)
-#define MRF_IOC_SETADDR _IOW(MRF_IOC_MAGIC, 1, mrf_address)
-#define MRF_IOC_SETFREQ _IO(MRF_IOC_MAGIC, 2)
-#define MRF_IOC_MAXNR 2
+#define MRF_IOC_RESET    _IO(MRF_IOC_MAGIC, 0)
+#define MRF_IOC_SETADDR  _IOW(MRF_IOC_MAGIC, 1, mrf_address)
+#define MRF_IOC_SETFREQ  _IO(MRF_IOC_MAGIC, 2)
+#define MRF_IOC_SETPOWER _IO(MRF_IOC_MAGIC, 3)
+#define MRF_IOC_MAXNR    3
 
 /* board setup */
 /*
