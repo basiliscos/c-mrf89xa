@@ -1,10 +1,18 @@
 #ifndef __MRF89XA_H
 #define __MRF89XA_H
 
+/* client exports */
+
 #include <linux/ioctl.h>
 
+#define MRF_IOC_MAGIC 'n'
+
+#define MRF_IOCRESET _IO(MRF_IOC_MAGIC, 0)
+#define MRF_IOC_MAXNR 0
+
+/* board setup */
 /*
-  http://elinux.org/RPi_BCM2835_GPIOs
+    http://elinux.org/RPi_BCM2835_GPIOs
 */
 #define CSCON_PIN 23
 #define RESET_PIN 22
@@ -14,10 +22,8 @@
 #define RESET_DELAY 100
 #define RESET_WAIT  6000
 
-#define MRF_IOC_MAGIC 'n'
 
-#define MRF_IOCRESET _IO(MRF_IOC_MAGIC, 0)
-#define MRF_IOC_MAXNR 0
+/* internals */
 
 /* raspberry pi has just 0-bus */
 #define MRFSPI_BUS_NO 0
@@ -33,8 +39,6 @@
 #define VCO_TRIM_10			0x04
 #define VCO_TRIM_11			0x06
 
-
-/* internals */
 #define REG_GCON        0x00
 #define REG_DMOD        0x01
 #define REG_FDEV        0x02
