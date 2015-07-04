@@ -221,9 +221,19 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
       mrf_device->state |= MRF_STATE_ADDRESSASSIGNED;
     }
     break;
+  case MRF_IOC_SETFREQ:
+    {
+      uint8_t *rps = (uint8_t*) &arg;
+      write_register(REG_R1C, *rps++);
+      write_register(REG_P1C, *rps++);
+      write_register(REG_S1C, *rps++);
+      mrf_device->state |= MRF_STATE_FREQASSIGNED;
+    }
+    break;
   default:  /* redundant, as cmd was checked against MAXNR */
     return -ENOTTY;
   };
+
  finish:
   up(&mrf_device->operation_semaphore);
   printk(KERN_INFO "mrf: ioctl result: %d\n", status);

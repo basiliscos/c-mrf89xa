@@ -6,6 +6,7 @@
 #include <linux/ioctl.h>
 
 #define MRF_BROADCAST_NODEADDR 0x00
+#define MRF_FREQ_864_74 ( (114 << 4*8) | (90 << 3*8) | (73 << 2*8))
 
 typedef struct mrf_address {
   uint8_t node_id;
@@ -16,7 +17,8 @@ typedef struct mrf_address {
 
 #define MRF_IOC_RESET   _IO(MRF_IOC_MAGIC, 0)
 #define MRF_IOC_SETADDR _IOW(MRF_IOC_MAGIC, 1, mrf_address)
-#define MRF_IOC_MAXNR 1
+#define MRF_IOC_SETFREQ _IO(MRF_IOC_MAGIC, 2)
+#define MRF_IOC_MAXNR 2
 
 /* board setup */
 /*
@@ -37,6 +39,7 @@ typedef struct mrf_address {
 #define MRF_STATE_DEVICEFOUND     1
 #define MRF_STATE_DEVICEOPENED    (1 << 1)
 #define MRF_STATE_ADDRESSASSIGNED (1 << 2)
+#define MRF_STATE_FREQASSIGNED    (1 << 3)
 
 
 /* raspberry pi has just 0-bus */
