@@ -81,7 +81,7 @@ static u8 default_register_values[] = {
   /* 23 == REG_SYNC_WORD_2 */ 0 /* network will be defined later */,
   /* 24 == REG_SYNC_WORD_3 */ 0 /* network will be defined later */,
   /* 25 == REG_SYNC_WORD_4 */ 0 /* network will be defined later */,
-  /* 26 == REG_TXCON       */ FC_400 | TXPOWER_13,
+  /* 26 == REG_TXCON       */ FC_400 | MRF_TXPOWER_PLUS_13,
   /* 27 == REG_CLKOUT      */ CLKOUT_OFF /* not needed*/,
   /* 28 == REG_PLOAD       */ MANCHESTER_OFF | PAYLOAD_64,
   /* 29 == REG_NADDS       */ 0 /* node address will be defined later */,

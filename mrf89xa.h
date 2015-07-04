@@ -8,6 +8,15 @@
 #define MRF_BROADCAST_NODEADDR 0x00
 #define MRF_FREQ_864_74 ( (114 << 4*8) | (90 << 3*8) | (73 << 2*8))
 
+#define MRF_TXPOWER_MINUS_8 ((111B) << 1)
+#define MRF_TXPOWER_MINUS_5 ((110B) << 1)
+#define MRF_TXPOWER_MINUS_2 ((101B) << 1)
+#define MRF_TXPOWER_PLUS_1  ((100B) << 1)
+#define MRF_TXPOWER_PLUS_4  ((011B) << 1)
+#define MRF_TXPOWER_PLUS_7  ((010B) << 1)
+#define MRF_TXPOWER_PLUS_10 ((001B) << 1)
+#define MRF_TXPOWER_PLUS_13 (0)
+
 typedef struct mrf_address {
   uint8_t node_id;
   uint32_t network_id;
@@ -162,15 +171,6 @@ typedef struct mrf_address {
 #define DEF_RXPARAM3				0x07
 
 #define FC_400                     0xF0
-
-#define TXPOWER_13					0x00
-#define TXPOWER_10					0x02
-#define TXPOWER_7					0x04
-#define TXPOWER_4					0x06
-#define TXPOWER_1					0x08
-#define TXPOWER_2					0x0A
-#define TXPOWER_5					0x0C
-#define TXPOWER_8					0x0E
 
 #define CLKOUT_OFF                0x00
 
