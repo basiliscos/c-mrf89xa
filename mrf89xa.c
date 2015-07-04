@@ -26,7 +26,6 @@
 
 #define MRFSPI_DRV_NAME "mrfspi"
 #define MRFSPI_DRV_VERSION "0.1"
-#define MRFSPI_MAX_COUNTER 10
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
 
@@ -43,8 +42,7 @@ MODULE_PARM_DESC(ignore_registers, "Ignore initial register values on probe.");
 struct mrf_dev {
   struct cdev cdev;
   struct semaphore device_semaphore;
-  int device_found;
-  int device_opened;
+  uint32_t state;
 
   struct semaphore operation_semaphore;
   struct spi_device *spi;
@@ -94,13 +92,13 @@ static u8 default_register_values[] = {
 static int mrf_open(struct inode *inode, struct file *filp) {
   int status;
 
-  printk(KERN_INFO "mrf: open device %p (opened = %d)\n", mrf_device, mrf_device->device_opened);
+  printk(KERN_INFO "mrf: open device %p\n", mrf_device);
 
   down(&mrf_device->device_semaphore);
 
-  if (! mrf_device->device_opened ) {
+  if (! (mrf_device->state & MRF_STATE_DEVICEOPENED) ) {
     try_module_get(THIS_MODULE);
-    mrf_device->device_opened = 1;
+    mrf_device->state = MRF_STATE_DEVICEOPENED;
     status = 0; /* success */
   } else {
     status = -EBUSY;
@@ -115,7 +113,7 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   down(&mrf_device->device_semaphore);
 
   module_put(THIS_MODULE);
-  mrf_device->device_opened = 0;
+  mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
 
   up(&mrf_device->device_semaphore);
   return 0;
@@ -188,7 +186,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   down(&mrf_device->operation_semaphore);
   printk(KERN_INFO "mrf: ioctl switch\n");
   switch(cmd) {
-  case MRF_IOCRESET:
+  case MRF_IOC_RESET:
     reset_pin = gpio_to_desc(RESET_PIN);
     if (IS_ERR_OR_NULL(reset_pin)) {
       printk(KERN_INFO "mrf: reset pin (%d) not found", RESET_PIN);
@@ -206,6 +204,22 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     status = initialize_registers();
     if (status) goto finish;
     printk(KERN_INFO "mrf: device reset successfull\n");
+    break;
+  case MRF_IOC_SETADDR:
+    {
+      mrf_address *addr = (mrf_address*) arg;
+      uint8_t *network_parts = (uint8_t*) &addr->network_id;
+      if (addr->node_id == MRF_BROADCAST_NODEADDR ) {
+        status = -ENOTTY;
+        goto finish;
+      }
+      write_register(REG_NADDS, addr->node_id);
+      write_register(REG_SYNC_WORD_1, network_parts[0]);
+      write_register(REG_SYNC_WORD_2, network_parts[1]);
+      write_register(REG_SYNC_WORD_3, network_parts[2]);
+      write_register(REG_SYNC_WORD_4, network_parts[3]);
+      mrf_device->state |= MRF_STATE_ADDRESSASSIGNED;
+    }
     break;
   default:  /* redundant, as cmd was checked against MAXNR */
     return -ENOTTY;
@@ -236,7 +250,7 @@ static int mrfdev_probe(struct spi_device *spi) {
     /* success */
     printk(KERN_INFO "mrf: device found\n");
     status = 0;
-    mrf_device->device_found = 1;
+    mrf_device->state |= MRF_STATE_DEVICEFOUND;
   }
   else {
     status = -ENODEV;
@@ -337,8 +351,7 @@ static __init int mrf_init(void) {
   mrf_dev->cdev.owner = THIS_MODULE;
   mrf_dev->cdev.ops = &mrf_fops;
   mrf_dev->spi = spi;
-  mrf_dev->device_found = 0;
-  mrf_dev->device_opened = 0;
+  mrf_dev->state = 0;
 
   mrf_device = mrf_dev;
 
@@ -359,7 +372,7 @@ static __init int mrf_init(void) {
   }
   driver_registered = 1;
   /* check that probe succeed */
-  if (!mrf_device->device_found) {
+  if ( !(mrf_device->state & MRF_STATE_DEVICEFOUND)) {
     printk(KERN_INFO "mrf: device hasn't been probed successfully\n");
     status = -ENODEV;
     goto err;

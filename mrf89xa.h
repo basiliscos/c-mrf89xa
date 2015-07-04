@@ -5,10 +5,18 @@
 
 #include <linux/ioctl.h>
 
+#define MRF_BROADCAST_NODEADDR 0x00
+
+typedef struct mrf_address {
+  uint8_t node_id;
+  uint32_t network_id;
+} mrf_address;
+
 #define MRF_IOC_MAGIC 'n'
 
-#define MRF_IOCRESET _IO(MRF_IOC_MAGIC, 0)
-#define MRF_IOC_MAXNR 0
+#define MRF_IOC_RESET   _IO(MRF_IOC_MAGIC, 0)
+#define MRF_IOC_SETADDR _IOW(MRF_IOC_MAGIC, 1, mrf_address)
+#define MRF_IOC_MAXNR 1
 
 /* board setup */
 /*
@@ -24,6 +32,12 @@
 
 
 /* internals */
+/* module internals */
+
+#define MRF_STATE_DEVICEFOUND     1
+#define MRF_STATE_DEVICEOPENED    (1 << 1)
+#define MRF_STATE_ADDRESSASSIGNED (1 << 2)
+
 
 /* raspberry pi has just 0-bus */
 #define MRFSPI_BUS_NO 0
