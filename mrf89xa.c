@@ -170,6 +170,7 @@ static int initialize_registers(void) {
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
   int status = 0;
+#define write_register_protected(ADDR, VALUE) status = write_register((ADDR), (VALUE)); if (status) goto finish;
   struct gpio_desc *reset_pin;
 
   printk(KERN_INFO "mrf: ioctl (%d)\n", cmd);
@@ -213,20 +214,20 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
         status = -ENOTTY;
         goto finish;
       }
-      write_register(REG_NADDS, addr->node_id);
-      write_register(REG_SYNC_WORD_1, network_parts[0]);
-      write_register(REG_SYNC_WORD_2, network_parts[1]);
-      write_register(REG_SYNC_WORD_3, network_parts[2]);
-      write_register(REG_SYNC_WORD_4, network_parts[3]);
+      write_register_protected(REG_NADDS, addr->node_id);
+      write_register_protected(REG_SYNC_WORD_1, network_parts[0]);
+      write_register_protected(REG_SYNC_WORD_2, network_parts[1]);
+      write_register_protected(REG_SYNC_WORD_3, network_parts[2]);
+      write_register_protected(REG_SYNC_WORD_4, network_parts[3]);
       mrf_device->state |= MRF_STATE_ADDRESSASSIGNED;
     }
     break;
   case MRF_IOC_SETFREQ:
     {
       uint8_t *rps = (uint8_t*) &arg;
-      write_register(REG_R1C, *rps++);
-      write_register(REG_P1C, *rps++);
-      write_register(REG_S1C, *rps++);
+      write_register_protected(REG_R1C, *rps++);
+      write_register_protected(REG_P1C, *rps++);
+      write_register_protected(REG_S1C, *rps++);
       mrf_device->state |= MRF_STATE_FREQASSIGNED;
     }
     break;
