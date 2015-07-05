@@ -284,6 +284,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   case MRF_IOC_SETPOWER:
     {
       uint8_t power_level = (uint8_t) arg;
+      printk(KERN_INFO "mrf: set power to: 0x%.2x\n", power_level);
       write_register_protected(REG_TXCON, (FC_400 | power_level));
     }
     break;
