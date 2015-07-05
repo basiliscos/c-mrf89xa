@@ -21,6 +21,8 @@
 #include <linux/gpio.h>
 
 #include <linux/delay.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 
 #include "mrf89xa.h"
 
@@ -28,6 +30,8 @@
 #define MRFSPI_DRV_VERSION "0.1"
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
+static int write_register(u8 index, u8 value);
+static u8 read_register(u8 index);
 
 static int ignore_registers = 0;
 
@@ -39,6 +43,7 @@ MODULE_VERSION(MRFSPI_DRV_VERSION);
 module_param(ignore_registers, int, S_IRUGO);
 MODULE_PARM_DESC(ignore_registers, "Ignore initial register values on probe.");
 
+
 struct mrf_dev {
   struct cdev cdev;
   struct semaphore device_semaphore;
@@ -48,6 +53,7 @@ struct mrf_dev {
   struct spi_device *spi;
   struct gpio_desc *config_pin;
   struct gpio_desc *data_pin;
+  struct proc_dir_entry* proc_file;
 };
 
 struct mrf_dev *mrf_device = NULL;
@@ -137,12 +143,42 @@ static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *of
   return bytes_read;
 }
 
+static int mrf_dump_stats(struct seq_file *m, void *v){
+  int i, j;
+  down(&mrf_device->device_semaphore);
+
+  /* print all 32 registers, 4 per row */
+  seq_printf(m, "mrf registers dump\n");
+  for (i = 0; i < 8; i++){
+    for (j = 0; j < 4; j++) {
+      int index = i*4 + j;
+      u8 value = read_register(index);
+      seq_printf(m, "register %02d = 0x%.2x %s", index + 1, value, (j == 3) ? "\n" : "| ");
+    }
+  }
+
+  up(&mrf_device->device_semaphore);
+  return 0;
+}
+
+static int mrf_proc_open(struct inode *inode, struct file *file) {
+  return single_open(file, mrf_dump_stats, NULL);
+}
+
 static struct file_operations mrf_fops = {
- .read           = mrf_read,
- .write          = mrf_write,
- .open           = mrf_open,
- .release        = mrf_release,
- .unlocked_ioctl = mrf_ioctl_unlocked,
+  .read           = mrf_read,
+  .write          = mrf_write,
+  .open           = mrf_open,
+  .release        = mrf_release,
+  .unlocked_ioctl = mrf_ioctl_unlocked,
+};
+
+static struct file_operations mrf_proc_fops = {
+  .owner          = THIS_MODULE,
+  .open           = mrf_proc_open,
+  .read           = seq_read,
+  .llseek	      = seq_lseek,
+  .release	      = single_release,
 };
 
 static int write_register(u8 index, u8 value) {
@@ -150,6 +186,10 @@ static int write_register(u8 index, u8 value) {
   gpiod_set_value(mrf_device->config_pin, 0);
   gpiod_set_value(mrf_device->data_pin, 0);
   return spi_write(mrf_device->spi, buff, ARRAY_SIZE(buff));
+}
+
+static u8 read_register(u8 index) {
+  return spi_w8r8(mrf_device->spi, CMD_READ_REGISTER(index));
 }
 
 static int initialize_registers(void) {
@@ -234,7 +274,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   case MRF_IOC_SETPOWER:
     {
       uint8_t power_level = (uint8_t) arg;
-      write_register_protected(REG_TXCON, (FC_400 | MRF_TXPOWER_PLUS_13));
+      write_register_protected(REG_TXCON, (FC_400 | power_level));
     }
     break;
   default:  /* redundant, as cmd was checked against MAXNR */
@@ -398,6 +438,14 @@ static __init int mrf_init(void) {
   printk(KERN_INFO "mrf: spi device found, max speed = %dKHz, chip select = %d\n",
          mrf_board_info.max_speed_hz, mrf_board_info.chip_select);
 
+  /* create proc fs entry */
+  mrf_device->proc_file = proc_create(MRFSPI_DRV_NAME, 0, NULL, &mrf_proc_fops);
+  if (! mrf_device->proc_file ) {
+    printk(KERN_INFO "mrf: could not initialize /proc/%s\n", MRFSPI_DRV_NAME);
+    status = -ENOMEM;
+    goto err;
+  }
+
   /* all OK */
   printk(KERN_INFO "mrf: initialization succeed\n");
   return 0;
@@ -419,6 +467,8 @@ static void __exit mrf_exit(void) {
   dev_t device_id;
   printk(KERN_INFO "mrf: removing module\n");
   /* TODO: check errors */
+
+  remove_proc_entry(MRFSPI_DRV_NAME, NULL);
 
   device_id = mrf_device->cdev.dev;
 
