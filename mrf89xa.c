@@ -13,6 +13,7 @@
 #include <linux/proc_fs.h>
 #include <linux/fcntl.h>
 #include <asm/uaccess.h>
+#include <asm/byteorder.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
@@ -148,6 +149,8 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
   down(&mrf_device->device_semaphore);
 
   /* print all 32 registers, 4 per row */
+  gpiod_set_value(mrf_device->config_pin, 0);
+  gpiod_set_value(mrf_device->data_pin, 0);
   seq_printf(m, "mrf registers dump\n");
   for (i = 0; i < 8; i++){
     for (j = 0; j < 4; j++) {
@@ -183,9 +186,13 @@ static struct file_operations mrf_proc_fops = {
 
 static int write_register(u8 index, u8 value) {
   u8 buff[] = {index << 1, value};
+  int status;
   gpiod_set_value(mrf_device->config_pin, 0);
   gpiod_set_value(mrf_device->data_pin, 0);
-  return spi_write(mrf_device->spi, buff, ARRAY_SIZE(buff));
+  status = spi_write(mrf_device->spi, buff, ARRAY_SIZE(buff));
+  gpiod_set_value(mrf_device->config_pin, 1);
+
+  return status;
 }
 
 static u8 read_register(u8 index) {
@@ -242,6 +249,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     gpiod_put(reset_pin);
     /* wait until mrf device reset */
     msleep(RESET_DELAY);
+
     status = initialize_registers();
     if (status) goto finish;
     printk(KERN_INFO "mrf: device reset successfull\n");
@@ -249,11 +257,13 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   case MRF_IOC_SETADDR:
     {
       mrf_address *addr = (mrf_address*) arg;
-      uint8_t *network_parts = (uint8_t*) &addr->network_id;
+      u32 network_id = cpu_to_be32(addr->network_id);
+      uint8_t *network_parts = (uint8_t*) &network_id;
       if (addr->node_id == MRF_BROADCAST_NODEADDR ) {
         status = -ENOTTY;
         goto finish;
       }
+      printk(KERN_INFO "mrf: set node address: 0x%.2x\n", addr->node_id);
       write_register_protected(REG_NADDS, addr->node_id);
       write_register_protected(REG_SYNC_WORD_1, network_parts[0]);
       write_register_protected(REG_SYNC_WORD_2, network_parts[1]);
