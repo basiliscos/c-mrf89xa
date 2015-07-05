@@ -146,16 +146,26 @@ static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *of
 
 static int mrf_dump_stats(struct seq_file *m, void *v){
   int i, j;
+  u8 regs[32];
+  u32 network_id;
   down(&mrf_device->device_semaphore);
 
   /* print all 32 registers, 4 per row */
   gpiod_set_value(mrf_device->config_pin, 0);
   gpiod_set_value(mrf_device->data_pin, 0);
-  seq_printf(m, "mrf registers dump\n");
+  for (i = 0; i < 32; i++) {
+    regs[i] = read_register(i);
+  }
+  seq_printf(m, "mrf dump\n");
+  network_id = (regs[REG_SYNC_WORD_1] << 8*3) | (regs[REG_SYNC_WORD_2] << 8*2)
+             | (regs[REG_SYNC_WORD_3] << 8*1) | (regs[REG_SYNC_WORD_4] << 8*0);
+  seq_printf(m, "node address: 0x%.2x, network: 0x%.8x\n", regs[REG_NADDS], network_id);
+
+  seq_printf(m, "raw register values\n");
   for (i = 0; i < 8; i++){
     for (j = 0; j < 4; j++) {
       int index = i*4 + j;
-      u8 value = read_register(index);
+      u8 value = regs[index];
       seq_printf(m, "register %02d = 0x%.2x %s", index + 1, value, (j == 3) ? "\n" : "| ");
     }
   }
