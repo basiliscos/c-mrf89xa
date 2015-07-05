@@ -8,13 +8,13 @@
 #define MRF_BROADCAST_NODEADDR 0x00
 #define MRF_FREQ_864_74 ( (114 << 4*8) | (90 << 3*8) | (73 << 2*8))
 
-#define MRF_TXPOWER_MINUS_8 ((111B) << 1)
-#define MRF_TXPOWER_MINUS_5 ((110B) << 1)
-#define MRF_TXPOWER_MINUS_2 ((101B) << 1)
-#define MRF_TXPOWER_PLUS_1  ((100B) << 1)
-#define MRF_TXPOWER_PLUS_4  ((011B) << 1)
-#define MRF_TXPOWER_PLUS_7  ((010B) << 1)
-#define MRF_TXPOWER_PLUS_10 ((001B) << 1)
+#define MRF_TXPOWER_MINUS_8 ((0b111B) << 1)
+#define MRF_TXPOWER_MINUS_5 ((0b110B) << 1)
+#define MRF_TXPOWER_MINUS_2 ((0b101B) << 1)
+#define MRF_TXPOWER_PLUS_1  ((0b100B) << 1)
+#define MRF_TXPOWER_PLUS_4  ((0b011B) << 1)
+#define MRF_TXPOWER_PLUS_7  ((0b010B) << 1)
+#define MRF_TXPOWER_PLUS_10 ((0b001B) << 1)
 #define MRF_TXPOWER_PLUS_13 (0)
 
 typedef struct mrf_address {
