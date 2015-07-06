@@ -260,8 +260,10 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     /* wait until mrf device reset */
     msleep(RESET_DELAY);
 
-    status = initialize_registers();
-    if (status) goto finish;
+    if (arg) {
+      status = initialize_registers();
+      if (status) goto finish;
+    }
     printk(KERN_INFO "mrf: device reset successfull\n");
     break;
   case MRF_IOC_SETADDR:
