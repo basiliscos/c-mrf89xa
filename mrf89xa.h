@@ -6,7 +6,7 @@
 #include <linux/ioctl.h>
 
 #define MRF_BROADCAST_NODEADDR 0x00
-#define MRF_FREQ_864_74 ( (114 << 4*8) | (90 << 3*8) | (73 << 2*8))
+#define MRF_FREQ_864_74 ( (114 << 3*8) | (90 << 2*8) | (73 << 1*8))
 
 #define MRF_TXPOWER_MINUS_8 ((0b111) << 1)
 #define MRF_TXPOWER_MINUS_5 ((0b110) << 1)
