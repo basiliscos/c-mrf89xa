@@ -163,8 +163,8 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
              | (regs[REG_SYNC_WORD_3] << 8*1) | (regs[REG_SYNC_WORD_4] << 8*0);
   seq_printf(m, "node address: 0x%.2x, network: 0x%.8x\n", regs[REG_NADDS], network_id);
 
-  freq = ((75*(regs[REG_P1C] + 1) + regs[REG_S1C]) * MRF_CRYSTALL_FREQ * 9) /((8 * regs[REG_R1C]));
-  seq_printf(m, "frequency: %d Hz\n", (int)(freq));
+  freq = ((MRF_CRYSTALL_FREQ)/((regs[REG_R1C]+1) * 8)) * ((75*(regs[REG_P1C] + 1) + regs[REG_S1C]) * 9);
+  seq_printf(m, "frequency: %llu Hz\n", freq);
 
   seq_printf(m, "raw register values\n");
   for (i = 0; i < 8; i++){
