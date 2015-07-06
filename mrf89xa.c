@@ -286,7 +286,8 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     break;
   case MRF_IOC_SETFREQ:
     {
-      uint8_t *rps = (uint8_t*) &arg;
+      uint32_t value = cpu_to_be32(arg);
+      uint8_t *rps = (uint8_t*) &value;
       write_register_protected(REG_R1C, *rps++);
       write_register_protected(REG_P1C, *rps++);
       write_register_protected(REG_S1C, *rps++);
