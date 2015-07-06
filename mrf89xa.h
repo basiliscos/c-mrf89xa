@@ -6,7 +6,7 @@
 #include <linux/ioctl.h>
 
 #define MRF_BROADCAST_NODEADDR 0x00
-#define MRF_FREQ_864_74 ( (114 << 3*8) | (90 << 2*8) | (73 << 1*8))
+#define MRF_FREQ_863_74 ( (114 << 3*8) | (90 << 2*8) | (73 << 1*8))
 
 #define MRF_TXPOWER_MINUS_8 ((0b111) << 1)
 #define MRF_TXPOWER_MINUS_5 ((0b110) << 1)
@@ -42,6 +42,7 @@ typedef struct mrf_address {
 #define RESET_DELAY 100
 #define RESET_WAIT  6000
 
+#define MRF_CRYSTALL_FREQ 12800000
 
 /* internals */
 /* module internals */

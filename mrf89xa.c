@@ -148,6 +148,7 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
   int i, j;
   u8 regs[32];
   u32 network_id;
+  u64 freq;
   down(&mrf_device->device_semaphore);
 
   /* print all 32 registers, 4 per row */
@@ -156,10 +157,14 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
   for (i = 0; i < 32; i++) {
     regs[i] = read_register(i);
   }
+
   seq_printf(m, "mrf dump\n");
   network_id = (regs[REG_SYNC_WORD_1] << 8*3) | (regs[REG_SYNC_WORD_2] << 8*2)
              | (regs[REG_SYNC_WORD_3] << 8*1) | (regs[REG_SYNC_WORD_4] << 8*0);
   seq_printf(m, "node address: 0x%.2x, network: 0x%.8x\n", regs[REG_NADDS], network_id);
+
+  freq = ((75*(regs[REG_P1C] + 1) + regs[REG_S1C]) * MRF_CRYSTALL_FREQ * 9) /((8 * regs[REG_R1C]));
+  seq_printf(m, "frequency: %d Hz\n", (int)(freq));
 
   seq_printf(m, "raw register values\n");
   for (i = 0; i < 8; i++){
