@@ -25,6 +25,9 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 
+#include <linux/interrupt.h>
+
+
 #include "mrf89xa.h"
 
 #define MRFSPI_DRV_NAME "mrfspi"
@@ -33,6 +36,9 @@
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
 static int write_register(u8 index, u8 value);
 static u8 read_register(u8 index);
+static irqreturn_t irq0_handler(int, void *);
+static irqreturn_t irq1_handler(int, void *);
+
 
 static int ignore_registers = 0;
 
@@ -49,6 +55,9 @@ struct mrf_dev {
   struct cdev cdev;
   struct semaphore device_semaphore;
   uint32_t state;
+
+  int irq0;
+  int irq1;
 
   struct semaphore operation_semaphore;
   struct spi_device *spi;
@@ -104,6 +113,28 @@ static int mrf_open(struct inode *inode, struct file *filp) {
   down(&mrf_device->device_semaphore);
 
   if (! (mrf_device->state & MRF_STATE_DEVICEOPENED) ) {
+    int irq0, irq1;
+
+    irq0 = gpio_to_irq(IRQ0_PIN);
+    if (irq0 < 0) {
+      status = irq0;
+      printk(KERN_WARNING "mrf: cannot get irq0 via %d pin (status: %d)\n", IRQ0_PIN, status);
+      goto finish;
+    }
+    status = request_irq(irq0, &irq0_handler, 0, MRFSPI_DRV_NAME, NULL);
+    if (!status) goto finish;
+    mrf_device->irq0 = irq0;
+
+    irq1 = gpio_to_irq(IRQ1_PIN);
+    if (irq1 < 0) {
+      status = irq1;
+      printk(KERN_WARNING "mrf: cannot get irq1 via %d pin (status: %d)\n", IRQ1_PIN, status);
+      goto finish;
+    }
+    status = request_irq(irq1, &irq1_handler, 0, MRFSPI_DRV_NAME, NULL);
+    if (!status) goto finish;
+    mrf_device->irq1 = irq1;
+
     try_module_get(THIS_MODULE);
     mrf_device->state = MRF_STATE_DEVICEOPENED;
     status = 0; /* success */
@@ -111,13 +142,23 @@ static int mrf_open(struct inode *inode, struct file *filp) {
     status = -EBUSY;
   }
 
+ finish:
   up(&mrf_device->device_semaphore);
+  if (!status) {
+    if (mrf_device->irq0) free_irq(mrf_device->irq0, MRFSPI_DRV_NAME);
+    if (mrf_device->irq1) free_irq(mrf_device->irq1, MRFSPI_DRV_NAME);
+    module_put(THIS_MODULE);
+
+  }
   return status;
 }
 
 static int mrf_release(struct inode *inode, struct file *filp) {
   printk(KERN_INFO "mrf: release device\n");
   down(&mrf_device->device_semaphore);
+
+  free_irq(mrf_device->irq0, MRFSPI_DRV_NAME);
+  free_irq(mrf_device->irq1, MRFSPI_DRV_NAME);
 
   module_put(THIS_MODULE);
   mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
@@ -228,6 +269,15 @@ static int initialize_registers(void) {
   return status;
 }
 
+static irqreturn_t irq0_handler(int a, void *b) {
+  printk(KERN_INFO "mrf: irq0_handler\n");
+  return IRQ_HANDLED;
+}
+
+static irqreturn_t irq1_handler(int a, void *b) {
+  printk(KERN_INFO "mrf: irq1_handler\n");
+  return IRQ_HANDLED;
+}
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
   int status = 0;
