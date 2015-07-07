@@ -95,11 +95,12 @@ typedef struct mrf_address {
 #define REG_PKTC        0x1E
 #define REG_FCRC        0x1D
 
-#define CHIPMODE_SLEEPMODE  0x00
+#define CHIPMODE_SLEEPMODE  (0)
 #define CHIPMODE_STBYMODE 	((0b001) << 5)
 #define CHIPMODE_FSMODE	 	((0b010) << 5)
 #define CHIPMODE_RX		 	((0b011) << 5)
-#define CHIPMODE_TX		 	((0b190) << 5)
+#define CHIPMODE_TX		 	((0b100) << 5)
+#define CHIPMODE_MASK	 	((0b111) << 5)
 
 #define DATAMODE_CONTINUOUS 0x00	//00 [Bit2,Bit5];default
 #define DATAMODE_BUFFERED	0x20	//01

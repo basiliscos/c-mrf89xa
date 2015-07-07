@@ -67,6 +67,7 @@ struct mrf_dev {
 };
 
 struct mrf_dev *mrf_device = NULL;
+static const char* mrf_device_name = MRFSPI_DRV_NAME;
 
 static u8 por_register_values[] = { 0x28, 0x88, 0x03, 0x07, 0x0C, 0x0F };
 
@@ -121,9 +122,10 @@ static int mrf_open(struct inode *inode, struct file *filp) {
       printk(KERN_WARNING "mrf: cannot get irq0 via %d pin (status: %d)\n", IRQ0_PIN, status);
       goto finish;
     }
-    status = request_irq(irq0, &irq0_handler, 0, MRFSPI_DRV_NAME, NULL);
-    if (!status) goto finish;
+    status = request_irq(irq0, &irq0_handler, 0, mrf_device_name, mrf_device);
+    if (status) goto finish;
     mrf_device->irq0 = irq0;
+    printk(KERN_INFO "mrf: irq0 %d\n", irq0);
 
     irq1 = gpio_to_irq(IRQ1_PIN);
     if (irq1 < 0) {
@@ -131,9 +133,10 @@ static int mrf_open(struct inode *inode, struct file *filp) {
       printk(KERN_WARNING "mrf: cannot get irq1 via %d pin (status: %d)\n", IRQ1_PIN, status);
       goto finish;
     }
-    status = request_irq(irq1, &irq1_handler, 0, MRFSPI_DRV_NAME, NULL);
-    if (!status) goto finish;
+    status = request_irq(irq1, &irq1_handler, 0, mrf_device_name, mrf_device);
+    if (status) goto finish;
     mrf_device->irq1 = irq1;
+    printk(KERN_INFO "mrf: irq1 %d\n", irq1);
 
     try_module_get(THIS_MODULE);
     mrf_device->state = MRF_STATE_DEVICEOPENED;
@@ -144,11 +147,10 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 
  finish:
   up(&mrf_device->device_semaphore);
-  if (!status) {
-    if (mrf_device->irq0) free_irq(mrf_device->irq0, MRFSPI_DRV_NAME);
-    if (mrf_device->irq1) free_irq(mrf_device->irq1, MRFSPI_DRV_NAME);
+  if (status) { /* error */
+    if (mrf_device->irq0) free_irq(mrf_device->irq0, mrf_device);
+    if (mrf_device->irq1) free_irq(mrf_device->irq1, mrf_device);
     module_put(THIS_MODULE);
-
   }
   return status;
 }
@@ -157,8 +159,8 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   printk(KERN_INFO "mrf: release device\n");
   down(&mrf_device->device_semaphore);
 
-  free_irq(mrf_device->irq0, MRFSPI_DRV_NAME);
-  free_irq(mrf_device->irq1, MRFSPI_DRV_NAME);
+  free_irq(mrf_device->irq0, mrf_device);
+  free_irq(mrf_device->irq1, mrf_device);
 
   module_put(THIS_MODULE);
   mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
@@ -188,8 +190,10 @@ static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *of
 static int mrf_dump_stats(struct seq_file *m, void *v){
   int i, j;
   u8 regs[32];
+  u8 mode_id;
   u32 network_id;
   u64 freq;
+  const char* mode;
   down(&mrf_device->device_semaphore);
 
   /* print all 32 registers, 4 per row */
@@ -202,6 +206,19 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
   seq_printf(m, "mrf dump\n");
   network_id = (regs[REG_SYNC_WORD_1] << 8*3) | (regs[REG_SYNC_WORD_2] << 8*2)
              | (regs[REG_SYNC_WORD_3] << 8*1) | (regs[REG_SYNC_WORD_4] << 8*0);
+  mode_id = regs[REG_GCON] & CHIPMODE_MASK;
+  mode = (mode_id  == CHIPMODE_TX)
+    ? "tx"
+    : (mode_id == CHIPMODE_RX)
+    ? "rx"
+    : (mode_id == CHIPMODE_FSMODE)
+    ? "fs"
+    : (mode_id == CHIPMODE_STBYMODE)
+    ? "stand-by"
+    : "sleep"
+    ;
+
+  seq_printf(m, "mode: %s\n", mode);
   seq_printf(m, "node address: 0x%.2x, network: 0x%.8x\n", regs[REG_NADDS], network_id);
 
   freq = ((MRF_CRYSTALL_FREQ)/((regs[REG_R1C]+1) * 8)) * ((75*(regs[REG_P1C] + 1) + regs[REG_S1C]) * 9);
