@@ -153,10 +153,10 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
 
   /* print all 32 registers, 4 per row */
   gpiod_set_value(mrf_device->config_pin, 0);
-  gpiod_set_value(mrf_device->data_pin, 0);
   for (i = 0; i < 32; i++) {
     regs[i] = read_register(i);
   }
+  gpiod_set_value(mrf_device->config_pin, 1);
 
   seq_printf(m, "mrf dump\n");
   network_id = (regs[REG_SYNC_WORD_1] << 8*3) | (regs[REG_SYNC_WORD_2] << 8*2)
@@ -203,7 +203,6 @@ static int write_register(u8 index, u8 value) {
   u8 buff[] = {index << 1, value};
   int status;
   gpiod_set_value(mrf_device->config_pin, 0);
-  gpiod_set_value(mrf_device->data_pin, 0);
   status = spi_write(mrf_device->spi, buff, ARRAY_SIZE(buff));
   gpiod_set_value(mrf_device->config_pin, 1);
 
@@ -325,13 +324,13 @@ static int mrfdev_probe(struct spi_device *spi) {
   printk(KERN_INFO "mrf: probing spi device %p for mrf presence\n", spi);
 
   gpiod_set_value(mrf_device->config_pin, 0);
-  gpiod_set_value(mrf_device->data_pin, 0);
   for (i = 0; i < ARRAY_SIZE(por_register_values); i++) {
     u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
     u8 expected = por_register_values[i];
     printk(KERN_INFO "mrf: probing %d register. Got: %.2x, expected: %.2x\n", i, got, expected);
     mrf_found &= (got == expected);
   }
+  gpiod_set_value(mrf_device->config_pin, 1);
   if (mrf_found | ignore_registers) {
     /* success */
     printk(KERN_INFO "mrf: device found\n");
@@ -411,7 +410,7 @@ static __init int mrf_init(void) {
     goto err;
   }
   gpiod_direction_output(mrf_dev->config_pin, 0);
-  gpiod_set_value(mrf_dev->config_pin, 0);
+  gpiod_set_value(mrf_dev->config_pin, 1);
 
   mrf_dev->data_pin = gpio_to_desc(DATA_PIN);
   if (IS_ERR_OR_NULL(mrf_dev->data_pin)) {
