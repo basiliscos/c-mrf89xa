@@ -38,6 +38,8 @@ static int write_register(u8 index, u8 value);
 static u8 read_register(u8 index);
 static irqreturn_t irq0_handler(int, void *);
 static irqreturn_t irq1_handler(int, void *);
+static int set_chip_mode(u8 mode);
+static int write_fifo(u8 address, u8 length, void* data);
 
 
 static int ignore_registers = 0;
@@ -152,6 +154,37 @@ static int mrf_open(struct inode *inode, struct file *filp) {
     if (mrf_device->irq1) free_irq(mrf_device->irq1, mrf_device);
     module_put(THIS_MODULE);
   }
+
+  /* tmp code */
+  if(!status) {
+    u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
+    u8 data[] = {0x1, 0x2};
+    printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
+
+    set_chip_mode(CHIPMODE_STBYMODE);
+    /* switch to write fifo mode */
+    access |= FIFO_STBY_ACCESS_WRITE;
+    if (write_register(REG_FCRC, access)) {
+      goto err;
+    }
+    /* lock current frequency */
+    if (write_register(REG_FTPRI, default_register_values[REG_FTPRI] | IRQ1_PLL_LOCK)){
+      goto err;
+    }
+    /* clear FIFO and FIFO overrun flag */
+    if (write_register(REG_FTXRXI, default_register_values[REG_FTXRXI] | IRQ1_FIFO_OVERRUN_CLEAR)) {
+      goto err;
+    }
+    /* send to broadcast address some dummy data*/
+    if (write_fifo(0x00, ARRAY_SIZE(data), data)) {
+      goto err;
+    }
+    set_chip_mode(CHIPMODE_TX);
+    printk(KERN_INFO "mrf: tmp success\n");
+  err:
+    printk(KERN_INFO "mrf: tmp error\n");
+
+  }
   return status;
 }
 
@@ -197,11 +230,9 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
   down(&mrf_device->device_semaphore);
 
   /* print all 32 registers, 4 per row */
-  gpiod_set_value(mrf_device->config_pin, 0);
   for (i = 0; i < 32; i++) {
     regs[i] = read_register(i);
   }
-  gpiod_set_value(mrf_device->config_pin, 1);
 
   seq_printf(m, "mrf dump\n");
   network_id = (regs[REG_SYNC_WORD_1] << 8*3) | (regs[REG_SYNC_WORD_2] << 8*2)
@@ -267,8 +298,25 @@ static int write_register(u8 index, u8 value) {
   return status;
 }
 
+static int write_fifo(u8 address, u8 length, void* data) {
+  int status;
+  gpiod_set_value(mrf_device->data_pin, 0);
+  status = spi_write(mrf_device->spi, &length, 1);
+  if (!status) goto finish;
+  status = spi_write(mrf_device->spi, &address, 1);
+  if (!status) goto finish;
+  status = spi_write(mrf_device->spi, data, length);
+ finish:
+  gpiod_set_value(mrf_device->data_pin, 1);
+  return status;
+}
+
 static u8 read_register(u8 index) {
-  return spi_w8r8(mrf_device->spi, CMD_READ_REGISTER(index));
+  u8 value;
+  gpiod_set_value(mrf_device->config_pin, 0);
+  value = spi_w8r8(mrf_device->spi, CMD_READ_REGISTER(index));
+  gpiod_set_value(mrf_device->config_pin, 1);
+  return value;
 }
 
 static int initialize_registers(void) {
@@ -295,6 +343,15 @@ static irqreturn_t irq1_handler(int a, void *b) {
   printk(KERN_INFO "mrf: irq1_handler\n");
   return IRQ_HANDLED;
 }
+
+static int set_chip_mode(u8 mode) {
+  u8 value;
+
+  value = read_register(REG_GCON) & (~CHIPMODE_MASK);
+  value |= mode;
+  return write_register(REG_GCON, value);
+}
+
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
   int status = 0;
@@ -390,14 +447,12 @@ static int mrfdev_probe(struct spi_device *spi) {
 
   printk(KERN_INFO "mrf: probing spi device %p for mrf presence\n", spi);
 
-  gpiod_set_value(mrf_device->config_pin, 0);
   for (i = 0; i < ARRAY_SIZE(por_register_values); i++) {
     u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
     u8 expected = por_register_values[i];
     printk(KERN_INFO "mrf: probing %d register. Got: %.2x, expected: %.2x\n", i, got, expected);
     mrf_found &= (got == expected);
   }
-  gpiod_set_value(mrf_device->config_pin, 1);
   if (mrf_found | ignore_registers) {
     /* success */
     printk(KERN_INFO "mrf: device found\n");
@@ -428,7 +483,7 @@ static struct spi_driver mrfdev_spi_driver = {
 static struct spi_board_info mrf_board_info = {
   .modalias = "mrf",
   .max_speed_hz = 1800000,
-  .chip_select = 1,
+  .chip_select = 0,
   /*.irq = ? */
   /*.platform_data = ... */
 };

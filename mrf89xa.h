@@ -149,10 +149,12 @@ typedef struct mrf_address {
 #define FIFOSIZE_64			0xC0
 
 #define IRQ0_RX_STDBY_SYNCADRS        0xC0
+#define IRQ1_FIFO_OVERRUN_CLEAR       0b1
 #define IRQ1_RX_STDBY_CRCOK           0x00
 #define IRQ1_TX_TXDONE                0x08
 
 #define IRQ1_PLL_LOCK_PIN_ON          0x01
+#define IRQ1_PLL_LOCK                 (0b1 << 1)
 
 #define IRQ0_TX_START_FIFONOTEMPTY    0x10
 /* required to setup parameter, see p. 40 of datasheet */
@@ -201,5 +203,7 @@ typedef struct mrf_address {
 
 #define FIFO_AUTOCLR_ON				0x00
 #define FIFO_STBY_ACCESS_WRITE		0x00
+#define FIFO_STBY_ACCESS_READ		((0b1) << 6)
+#define FIFO_STBY_ACCESS_MASK		((0b1) << 6)
 
 #endif /* __MRF89XA_H */
