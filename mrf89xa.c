@@ -446,8 +446,13 @@ static int mrfdev_probe(struct spi_device *spi) {
   printk(KERN_INFO "mrf: probing spi device %p for mrf presence\n", spi);
 
   for (i = 0; i < ARRAY_SIZE(por_register_values); i++) {
-    u8 got = spi_w8r8(spi, CMD_READ_REGISTER(i));
+    u8 got;
     u8 expected = por_register_values[i];
+
+    gpiod_set_value(mrf_device->config_pin, 0);
+    got = spi_w8r8(spi, CMD_READ_REGISTER(i));
+    gpiod_set_value(mrf_device->config_pin, 1);
+
     printk(KERN_INFO "mrf: probing %d register. Got: %.2x, expected: %.2x\n", i, got, expected);
     mrf_found &= (got == expected);
   }
