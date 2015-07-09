@@ -155,36 +155,6 @@ static int mrf_open(struct inode *inode, struct file *filp) {
     module_put(THIS_MODULE);
   }
 
-  /* tmp code */
-  if(!status) {
-    u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
-    u8 data[] = {0x1, 0x2};
-    printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
-
-    set_chip_mode(CHIPMODE_STBYMODE);
-    /* switch to write fifo mode */
-    access |= FIFO_STBY_ACCESS_WRITE;
-    if (write_register(REG_FCRC, access)) {
-      goto err;
-    }
-    /* lock current frequency */
-    if (write_register(REG_FTPRI, default_register_values[REG_FTPRI] | IRQ1_PLL_LOCK)){
-      goto err;
-    }
-    /* clear FIFO and FIFO overrun flag */
-    if (write_register(REG_FTXRXI, default_register_values[REG_FTXRXI] | IRQ1_FIFO_OVERRUN_CLEAR)) {
-      goto err;
-    }
-    /* send to broadcast address some dummy data*/
-    if (write_fifo(0x00, ARRAY_SIZE(data), data)) {
-      goto err;
-    }
-    set_chip_mode(CHIPMODE_TX);
-    printk(KERN_INFO "mrf: tmp success\n");
-  err:
-    printk(KERN_INFO "mrf: tmp error\n");
-
-  }
   return status;
 }
 
@@ -307,7 +277,7 @@ static int write_fifo(u8 address, u8 length, void* data) {
   if (!status) goto finish;
   status = spi_write(mrf_device->spi, data, length);
  finish:
-  gpiod_set_value(mrf_device->data_pin, 1);
+  //gpiod_set_value(mrf_device->data_pin, 1);
   return status;
 }
 
@@ -429,6 +399,34 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
       write_register_protected(REG_TXCON, (FC_400 | power_level));
     }
     break;
+  case MRF_IOC_DEBUG:
+    {
+      u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
+      u8 data[64] = {0x1};
+      printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
+
+      set_chip_mode(CHIPMODE_STBYMODE);
+      /* switch to write fifo mode */
+      access |= FIFO_STBY_ACCESS_WRITE;
+      if (write_register(REG_FCRC, access)) {
+        goto finish;
+      }
+      /* lock current frequency */
+      if (write_register(REG_FTPRI, default_register_values[REG_FTPRI] | IRQ1_PLL_LOCK)){
+        goto finish;
+      }
+      /* clear FIFO and FIFO overrun flag */
+      if (write_register(REG_FTXRXI, default_register_values[REG_FTXRXI] | IRQ1_FIFO_OVERRUN_CLEAR)) {
+        goto finish;
+      }
+      /* send to broadcast address some dummy data*/
+      if (write_fifo(0x00, ARRAY_SIZE(data), data)) {
+        goto finish;
+      }
+      set_chip_mode(CHIPMODE_TX);
+      printk(KERN_INFO "mrf: tmp success\n");
+    }
+    break;
   default:  /* redundant, as cmd was checked against MAXNR */
     return -ENOTTY;
   };
@@ -482,7 +480,7 @@ static struct spi_driver mrfdev_spi_driver = {
 
 static struct spi_board_info mrf_board_info = {
   .modalias = "mrf",
-  .max_speed_hz = 1800000,
+  .max_speed_hz = 1800000, /* 500 000, 1800000 */
   .chip_select = 0,
   /*.irq = ? */
   /*.platform_data = ... */
@@ -541,7 +539,7 @@ static __init int mrf_init(void) {
     goto err;
   }
   gpiod_direction_output(mrf_dev->data_pin, 0);
-  gpiod_set_value(mrf_dev->data_pin, 0);
+  gpiod_set_value(mrf_dev->data_pin, 1);
 
   /* characted device allocation */
   status = alloc_chrdev_region(&device_id, 1, 1, "mrf");
