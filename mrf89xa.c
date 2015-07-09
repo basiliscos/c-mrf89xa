@@ -39,7 +39,7 @@ static u8 read_register(u8 index);
 static irqreturn_t irq0_handler(int, void *);
 static irqreturn_t irq1_handler(int, void *);
 static int set_chip_mode(u8 mode);
-static int write_fifo(u8 address, u8 length, void* data);
+static int write_fifo(u8 address, u8 length, u8* data);
 
 
 static int ignore_registers = 0;
@@ -110,6 +110,7 @@ static u8 default_register_values[] = {
 
 static int mrf_open(struct inode *inode, struct file *filp) {
   int status;
+  struct gpio_desc *irq1_desc;
 
   printk(KERN_INFO "mrf: open device %p\n", mrf_device);
 
@@ -129,13 +130,27 @@ static int mrf_open(struct inode *inode, struct file *filp) {
     mrf_device->irq0 = irq0;
     printk(KERN_INFO "mrf: irq0 %d\n", irq0);
 
-    irq1 = gpio_to_irq(IRQ1_PIN);
+
+    irq1_desc = gpio_to_desc(IRQ1_PIN);
+    if (IS_ERR_OR_NULL(irq1_desc)) {
+      printk(KERN_INFO "mrf: irq1 pin (%d) not found", IRQ1_PIN);
+      goto finish;
+    }
+    status = gpiod_direction_input(irq1_desc);
+    if (status) {
+      printk(KERN_INFO "mrf: irq1 pin (%d) error setting input direction", IRQ1_PIN);
+      goto finish;
+    }
+    irq1 = gpiod_to_irq(irq1_desc);
     if (irq1 < 0) {
       status = irq1;
       printk(KERN_WARNING "mrf: cannot get irq1 via %d pin (status: %d)\n", IRQ1_PIN, status);
       goto finish;
     }
-    status = request_irq(irq1, &irq1_handler, 0, mrf_device_name, mrf_device);
+
+    status = request_irq(irq1, &irq1_handler,
+                         IRQF_TRIGGER_RISING,
+                         mrf_device_name, mrf_device);
     if (status) goto finish;
     mrf_device->irq1 = irq1;
     printk(KERN_INFO "mrf: irq1 %d\n", irq1);
@@ -197,6 +212,8 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
   u32 network_id;
   u64 freq;
   const char* mode;
+  struct gpio_desc *irq_pins[2];
+
   down(&mrf_device->device_semaphore);
 
   /* print all 32 registers, 4 per row */
@@ -230,10 +247,29 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
     for (j = 0; j < 4; j++) {
       int index = i*4 + j;
       u8 value = regs[index];
-      seq_printf(m, "register %02d = 0x%.2x %s", index + 1, value, (j == 3) ? "\n" : "| ");
+      seq_printf(m, "register %02d (0x%.2x) = 0x%.2x %s", index + 1, index, value, (j == 3) ? "\n" : "| ");
     }
   }
 
+  irq_pins[0] = gpio_to_desc(IRQ0_PIN);
+  if (IS_ERR_OR_NULL(irq_pins[0])) {
+    printk(KERN_INFO "mrf: irq0 pin (%d) not found", IRQ0_PIN);
+    goto finish;
+  }
+  gpiod_direction_input(irq_pins[0]);
+
+  irq_pins[1] = gpio_to_desc(IRQ1_PIN);
+  if (IS_ERR_OR_NULL(irq_pins[1])) {
+    printk(KERN_INFO "mrf: irq1 pin (%d) not found", IRQ1_PIN);
+    goto finish;
+  }
+  gpiod_direction_input(irq_pins[1]);
+
+  seq_printf(m, "pin %d value = %d, pin %d value = %d\n",
+             IRQ0_PIN, gpiod_get_value(irq_pins[0]),
+             IRQ1_PIN, gpiod_get_value(irq_pins[1]) );
+
+ finish:
   up(&mrf_device->device_semaphore);
   return 0;
 }
@@ -268,16 +304,40 @@ static int write_register(u8 index, u8 value) {
   return status;
 }
 
-static int write_fifo(u8 address, u8 length, void* data) {
+static int write_fifo(u8 address, u8 length, u8* data) {
   int status;
+  u8 i;
+
+  struct spi_transfer t = {
+    .tx_buf		= &length,
+    /* the same for all transfers */
+    .len		= 1,
+    /* .speed_hz   = 500000, */
+  };
+
+  /* trashfer length */
   gpiod_set_value(mrf_device->data_pin, 0);
-  status = spi_write(mrf_device->spi, &length, 1);
-  if (!status) goto finish;
-  status = spi_write(mrf_device->spi, &address, 1);
-  if (!status) goto finish;
-  status = spi_write(mrf_device->spi, data, length);
+  status = spi_sync_transfer(mrf_device->spi, &t, 1);
+  gpiod_set_value(mrf_device->data_pin, 1);
+  if (status) goto finish;
+
+  /* trashfer address */
+  t.tx_buf = &address;
+  gpiod_set_value(mrf_device->data_pin, 0);
+  status = spi_sync_transfer(mrf_device->spi, &t, 1);
+  gpiod_set_value(mrf_device->data_pin, 1);
+  if (status) goto finish;
+
+  /* by-byte transfer data*/
+  for (i = 0; i < length; i++) {
+    t.tx_buf = data + i;
+    gpiod_set_value(mrf_device->data_pin, 0);
+    status = spi_sync_transfer(mrf_device->spi, &t, 1);
+    gpiod_set_value(mrf_device->data_pin, 1);
+    if (status) goto finish;
+  }
+
  finish:
-  //gpiod_set_value(mrf_device->data_pin, 1);
   return status;
 }
 
@@ -402,7 +462,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   case MRF_IOC_DEBUG:
     {
       u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
-      u8 data[64] = {0x1};
+      u8 data[5] = {0x1};
       printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
 
       set_chip_mode(CHIPMODE_STBYMODE);
@@ -485,7 +545,7 @@ static struct spi_driver mrfdev_spi_driver = {
 
 static struct spi_board_info mrf_board_info = {
   .modalias = "mrf",
-  .max_speed_hz = 1800000, /* 500 000, 1800000 */
+  //.max_speed_hz = 100000, /* 500 000, 1800000 */
   .chip_select = 0,
   /*.irq = ? */
   /*.platform_data = ... */
