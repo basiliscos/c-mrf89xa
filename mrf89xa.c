@@ -307,9 +307,11 @@ static int write_register(u8 index, u8 value) {
 static int write_fifo(u8 address, u8 length, u8* data) {
   int status;
   u8 i;
+  /* add address byte to the length of fifo buffer */
+  u8 total_lenght = length + 1;
 
   struct spi_transfer t = {
-    .tx_buf		= &length,
+    .tx_buf		= &total_lenght,
     /* the same for all transfers */
     .len		= 1,
     /* .speed_hz   = 500000, */
@@ -462,7 +464,7 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   case MRF_IOC_DEBUG:
     {
       u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
-      u8 data[5] = {0x1};
+      u8 data[5] = {0x1, 0x2, 0x3, 0x4, 0xFF};
       printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
 
       set_chip_mode(CHIPMODE_STBYMODE);
