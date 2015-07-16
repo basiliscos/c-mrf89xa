@@ -20,13 +20,12 @@
 
 #include <linux/gpio/consumer.h>
 #include <linux/gpio.h>
-
+#include <asm/atomic.h>
 #include <linux/delay.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 
 #include <linux/interrupt.h>
-
 
 #include "mrf89xa.h"
 
@@ -55,16 +54,18 @@ MODULE_PARM_DESC(ignore_registers, "Ignore initial register values on probe.");
 
 struct mrf_dev {
   struct cdev cdev;
-  struct semaphore device_semaphore;
   uint32_t state;
 
   int irq0;
   int irq1;
 
-  struct semaphore operation_semaphore;
+  atomic_t interrupt_flag;
+  /* protects access to driver, i.e. state */
+  struct semaphore driver_semaphore;
   struct spi_device *spi;
   struct gpio_desc *config_pin;
   struct gpio_desc *data_pin;
+  struct gpio_desc *reset_pin;
   struct proc_dir_entry* proc_file;
 };
 
@@ -114,7 +115,7 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 
   printk(KERN_INFO "mrf: open device %p\n", mrf_device);
 
-  down(&mrf_device->device_semaphore);
+  down(&mrf_device->driver_semaphore);
 
   if (! (mrf_device->state & MRF_STATE_DEVICEOPENED) ) {
     int irq0, irq1;
@@ -163,7 +164,7 @@ static int mrf_open(struct inode *inode, struct file *filp) {
   }
 
  finish:
-  up(&mrf_device->device_semaphore);
+  up(&mrf_device->driver_semaphore);
   if (status) { /* error */
     if (mrf_device->irq0) free_irq(mrf_device->irq0, mrf_device);
     if (mrf_device->irq1) free_irq(mrf_device->irq1, mrf_device);
@@ -175,7 +176,7 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 
 static int mrf_release(struct inode *inode, struct file *filp) {
   printk(KERN_INFO "mrf: release device\n");
-  down(&mrf_device->device_semaphore);
+  down(&mrf_device->driver_semaphore);
 
   free_irq(mrf_device->irq0, mrf_device);
   free_irq(mrf_device->irq1, mrf_device);
@@ -183,7 +184,7 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   module_put(THIS_MODULE);
   mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
 
-  up(&mrf_device->device_semaphore);
+  up(&mrf_device->driver_semaphore);
   return 0;
 }
 
@@ -214,7 +215,7 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
   const char* mode;
   struct gpio_desc *irq_pins[2];
 
-  down(&mrf_device->device_semaphore);
+  down(&mrf_device->driver_semaphore);
 
   /* print all 32 registers, 4 per row */
   for (i = 0; i < 32; i++) {
@@ -270,7 +271,7 @@ static int mrf_dump_stats(struct seq_file *m, void *v){
              IRQ1_PIN, gpiod_get_value(irq_pins[1]) );
 
  finish:
-  up(&mrf_device->device_semaphore);
+  up(&mrf_device->driver_semaphore);
   return 0;
 }
 
@@ -330,7 +331,7 @@ static int write_fifo(u8 address, u8 length, u8* data) {
   gpiod_set_value(mrf_device->data_pin, 1);
   if (status) goto finish;
 
-  /* by-byte transfer data*/
+  /* by-byte transfer data */
   for (i = 0; i < length; i++) {
     t.tx_buf = data + i;
     gpiod_set_value(mrf_device->data_pin, 0);
@@ -372,7 +373,13 @@ static irqreturn_t irq0_handler(int a, void *b) {
 }
 
 static irqreturn_t irq1_handler(int a, void *b) {
-  printk(KERN_INFO "mrf: irq1_handler\n");
+  int flag = atomic_cmpxchg(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT, MRF_IRQ_PROCESSING);
+  if ( flag == MRF_IRQ_DEFAULT ) {
+    printk(KERN_INFO "mrf: irq1_handler\n");
+    atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT);
+  }else if (flag == MRF_IRQ_PROCESSING) {
+    printk(KERN_WARNING "mrf: irq1_handler is called during other interrupt processing?\n");
+  }
   return IRQ_HANDLED;
 }
 
@@ -417,10 +424,44 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   return status;
 }
 
+static int reset_mrf(int reinitialize) {
+  int status;
+
+  down(&mrf_device->driver_semaphore);
+
+  /* disable mrf interrupts during reset */
+  disable_irq(mrf_device->irq0);
+  disable_irq(mrf_device->irq1);
+  atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_IGNORE);
+
+  gpiod_set_value(mrf_device->reset_pin, 1);
+
+  /* signal reset */
+  msleep(RESET_DELAY);
+
+  gpiod_set_value(mrf_device->reset_pin, 0);
+  /* wait until device will be up */
+  msleep(RESET_DELAY);
+
+  if (reinitialize) {
+    status = initialize_registers();
+    if (status) goto finish;
+  }
+  printk(KERN_INFO "mrf: device reset successfull\n");
+
+ finish:
+  /* restore interrupt handlers */
+  atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT);
+  enable_irq(mrf_device->irq0);
+  enable_irq(mrf_device->irq1);
+
+  up(&mrf_device->driver_semaphore);
+  return status;
+}
+
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
   int status = 0;
 #define write_register_protected(ADDR, VALUE) status = write_register((ADDR), (VALUE)); if (status) goto finish;
-  struct gpio_desc *reset_pin;
 
   printk(KERN_INFO "mrf: ioctl (%d)\n", cmd);
 
@@ -433,30 +474,10 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     status = !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
   if (status) return -EFAULT;
 
-  down(&mrf_device->operation_semaphore);
   printk(KERN_INFO "mrf: ioctl switch\n");
   switch(cmd) {
   case MRF_IOC_RESET:
-    reset_pin = gpio_to_desc(RESET_PIN);
-    if (IS_ERR_OR_NULL(reset_pin)) {
-      printk(KERN_INFO "mrf: reset pin (%d) not found", RESET_PIN);
-      status = -EFAULT;
-      goto finish;
-    }
-    gpiod_direction_output(reset_pin, 1);
-    gpiod_set_value(reset_pin, 1);
-    /* wait until mrf device reset */
-    msleep(RESET_DELAY);
-    gpiod_set_value(reset_pin, 0);
-    gpiod_put(reset_pin);
-    /* wait until mrf device reset */
-    msleep(RESET_DELAY);
-
-    if (arg) {
-      status = initialize_registers();
-      if (status) goto finish;
-    }
-    printk(KERN_INFO "mrf: device reset successfull\n");
+    reset_mrf(arg);
     break;
   case MRF_IOC_SETADDR:
     {
@@ -505,7 +526,6 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   };
 
  finish:
-  up(&mrf_device->operation_semaphore);
   printk(KERN_INFO "mrf: ioctl result: %d\n", status);
   return status;
 }
@@ -619,6 +639,15 @@ static __init int mrf_init(void) {
   gpiod_direction_output(mrf_dev->data_pin, 0);
   gpiod_set_value(mrf_dev->data_pin, 1);
 
+  mrf_dev->reset_pin = gpio_to_desc(RESET_PIN);
+  if (IS_ERR_OR_NULL(mrf_dev->reset_pin)) {
+    printk(KERN_INFO "mrf: reset pin (%d) not found", RESET_PIN);
+    status = -EFAULT;
+    goto err;
+  }
+  gpiod_direction_output(mrf_dev->reset_pin, 0);
+  gpiod_set_value(mrf_dev->reset_pin, 0);
+
   /* characted device allocation */
   status = alloc_chrdev_region(&device_id, 1, 1, "mrf");
   if ( status < 0 ) {
@@ -628,8 +657,8 @@ static __init int mrf_init(void) {
   printk(KERN_INFO "mrf: allocated major device numer: %d\n", MAJOR(device_id));
 
   /* initialize mrf device */
-  sema_init(&mrf_dev->device_semaphore, 1);
-  sema_init(&mrf_dev->operation_semaphore, 1);
+  atomic_set(&mrf_dev->interrupt_flag, MRF_IRQ_DEFAULT);
+  sema_init(&mrf_dev->driver_semaphore, 1);
   cdev_init(&mrf_dev->cdev, &mrf_fops);
   mrf_dev->cdev.owner = THIS_MODULE;
   mrf_dev->cdev.ops = &mrf_fops;
@@ -683,6 +712,7 @@ static __init int mrf_init(void) {
   if (device_id) unregister_chrdev_region(device_id, 1);
   if (mrf_dev && mrf_dev->config_pin && !IS_ERR_OR_NULL(mrf_dev->config_pin)) gpiod_put(mrf_dev->config_pin);
   if (mrf_dev && mrf_dev->data_pin && !IS_ERR_OR_NULL(mrf_dev->data_pin)) gpiod_put(mrf_dev->data_pin);
+  if (mrf_dev && mrf_dev->reset_pin && !IS_ERR_OR_NULL(mrf_dev->reset_pin)) gpiod_put(mrf_dev->reset_pin);
   if (spi) spi_unregister_device(spi);
   if (mrf_dev) kfree(mrf_dev);
   mrf_device = NULL;
@@ -706,6 +736,7 @@ static void __exit mrf_exit(void) {
 
   gpiod_put(mrf_device->config_pin);
   gpiod_put(mrf_device->data_pin);
+  gpiod_put(mrf_device->reset_pin);
 
   printk(KERN_INFO "mrf: mrf device memory deallocated\n");
 

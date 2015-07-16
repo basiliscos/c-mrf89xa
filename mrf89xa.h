@@ -55,6 +55,9 @@ typedef struct mrf_address {
 #define MRF_STATE_ADDRESSASSIGNED (1 << 2)
 #define MRF_STATE_FREQASSIGNED    (1 << 3)
 
+#define MRF_IRQ_DEFAULT    0
+#define MRF_IRQ_IGNORE     1
+#define MRF_IRQ_PROCESSING 2
 
 /* raspberry pi has just 0-bus */
 #define MRFSPI_BUS_NO 0
