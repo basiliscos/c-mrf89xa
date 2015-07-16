@@ -384,6 +384,38 @@ static int set_chip_mode(u8 mode) {
   return write_register(REG_GCON, value);
 }
 
+static int transfer_data(u8 address, u8 length, u8* data) {
+  int status;
+  u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
+  printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
+
+  if ((status = set_chip_mode(CHIPMODE_STBYMODE))) goto finish;
+
+  /* switch to write fifo mode */
+  access |= FIFO_STBY_ACCESS_WRITE;
+  if ((status = write_register(REG_FCRC, access))) {
+    goto finish;
+  }
+  /* lock current frequency */
+  if ((status = write_register(REG_FTPRI, default_register_values[REG_FTPRI] | IRQ1_PLL_LOCK))){
+    goto finish;
+  }
+  /* clear FIFO and FIFO overrun flag */
+  if ((status = write_register(REG_FTXRXI, default_register_values[REG_FTXRXI] | IRQ1_FIFO_OVERRUN_CLEAR))) {
+    goto finish;
+  }
+  /* send to broadcast address some dummy data*/
+  if ((status = write_fifo(0x00, length, data))) {
+    goto finish;
+  }
+  if ((status = set_chip_mode(CHIPMODE_TX))) {
+    goto finish;
+  }
+  printk(KERN_INFO "mrf: tmp success\n");
+
+ finish:
+  return status;
+}
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
   int status = 0;
@@ -463,30 +495,9 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     break;
   case MRF_IOC_DEBUG:
     {
-      u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
       u8 data[5] = {0x1, 0x2, 0x3, 0x4, 0xFF};
-      printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
-
-      set_chip_mode(CHIPMODE_STBYMODE);
-      /* switch to write fifo mode */
-      access |= FIFO_STBY_ACCESS_WRITE;
-      if (write_register(REG_FCRC, access)) {
-        goto finish;
-      }
-      /* lock current frequency */
-      if (write_register(REG_FTPRI, default_register_values[REG_FTPRI] | IRQ1_PLL_LOCK)){
-        goto finish;
-      }
-      /* clear FIFO and FIFO overrun flag */
-      if (write_register(REG_FTXRXI, default_register_values[REG_FTXRXI] | IRQ1_FIFO_OVERRUN_CLEAR)) {
-        goto finish;
-      }
-      /* send to broadcast address some dummy data*/
-      if (write_fifo(0x00, ARRAY_SIZE(data), data)) {
-        goto finish;
-      }
-      set_chip_mode(CHIPMODE_TX);
-      printk(KERN_INFO "mrf: tmp success\n");
+      u8 dst = 0x0; /* broadcast address */
+      transfer_data(dst, ARRAY_SIZE(data), data);
     }
     break;
   default:  /* redundant, as cmd was checked against MAXNR */
