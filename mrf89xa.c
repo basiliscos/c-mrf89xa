@@ -26,6 +26,7 @@
 #include <linux/seq_file.h>
 
 #include <linux/interrupt.h>
+#include <linux/timer.h>
 
 #include "mrf89xa.h"
 
@@ -39,7 +40,8 @@ static irqreturn_t irq0_handler(int, void *);
 static irqreturn_t irq1_handler(int, void *);
 static int set_chip_mode(u8 mode);
 static int write_fifo(u8 address, u8 length, u8* data);
-
+static void tx_timeout(unsigned long);
+static int _tx_queue_size(void);
 
 static int ignore_registers = 0;
 
@@ -60,6 +62,7 @@ struct mrf_dev {
   int irq1;
 
   atomic_t interrupt_flag;
+  struct timer_list tx_timeout_timer;
   /* protects access to driver, i.e. state */
   struct semaphore driver_semaphore;
   struct spi_device *spi;
@@ -67,6 +70,18 @@ struct mrf_dev {
   struct gpio_desc *data_pin;
   struct gpio_desc *reset_pin;
   struct proc_dir_entry* proc_file;
+
+  spinlock_t tx_queue_lock;
+  u8 tx_queue_size;
+  struct list_head tx_queue;
+};
+
+/* mimics mrf_frame, but embeds size */
+struct mrf_payload {
+  u8 dest;
+  u8 size;
+  u8 data[PAYLOAD_64];
+  struct list_head list_item;
 };
 
 struct mrf_dev *mrf_device = NULL;
@@ -189,8 +204,58 @@ static int mrf_release(struct inode *inode, struct file *filp) {
 }
 
 static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, loff_t * offset) {
-  printk(KERN_INFO "mrf: write to device isn't supported yet\n");
-  return -EINVAL;
+  int status;
+  int data_size;
+  u8 dest;
+  struct mrf_payload *payload = NULL;
+
+  down(&mrf_device->driver_semaphore);
+
+  /* queue size could extrenally be decreased only */
+  if ((filp->f_flags & O_NONBLOCK) && (_tx_queue_size() >= MRF_MAX_TX_QUEUE)) {
+    status = -EAGAIN;
+    goto finish;
+  }
+
+  /* check input data */
+  if (offset) { status = -EINVAL; goto finish; }
+  data_size = length - sizeof(((mrf_frame*)0)->dest);
+  if (data_size <= 0) {
+    /* nothing to send? */
+    status = -EINVAL;
+    goto finish;
+  }
+  if (!access_ok(VERIFY_READ, buff, length)) {
+    status = -EFAULT;
+    goto finish;
+  }
+  payload = kzalloc(sizeof(struct mrf_payload), GFP_KERNEL);
+  if ( !payload ) {
+    status = -ENOMEM;
+    goto finish;
+  }
+
+  status = __get_user(dest, (u8*)buff);
+  if ( !status) { goto finish; }
+  payload->dest = dest;
+
+  if (copy_from_user(&payload->data, buff + sizeof(u8), data_size)) {
+     status = -EFAULT;
+     goto finish;
+  }
+  payload->size = data_size;
+
+  /* check complete */
+
+  spin_lock(&mrf_device->tx_queue_lock);
+  list_add_tail(&payload->list_item, &mrf_device->tx_queue);
+  mrf_device->tx_queue_size++;
+  spin_unlock(&mrf_device->tx_queue_lock);
+
+ finish:
+  up(&mrf_device->driver_semaphore);
+  if (status <0 && payload) kfree(payload);
+  return status;
 }
 
 static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *offset) {
@@ -205,6 +270,15 @@ static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *of
   /* } */
   return bytes_read;
 }
+
+static int _tx_queue_size(void) {
+  int result;
+  spin_lock(&mrf_device->tx_queue_lock);
+  result = mrf_device->tx_queue_size;
+  spin_unlock(&mrf_device->tx_queue_lock);
+  return result;
+}
+
 
 static int mrf_dump_stats(struct seq_file *m, void *v){
   int i, j;
@@ -367,6 +441,12 @@ static int initialize_registers(void) {
   return status;
 }
 
+static void tx_timeout(unsigned long unused) {
+  printk(KERN_INFO "mrf: tx_timeout\n");
+  atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT);
+}
+
+
 static irqreturn_t irq0_handler(int a, void *b) {
   printk(KERN_INFO "mrf: irq0_handler\n");
   return IRQ_HANDLED;
@@ -418,6 +498,12 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   if ((status = set_chip_mode(CHIPMODE_TX))) {
     goto finish;
   }
+  /* tx timeout timer */
+  init_timer(&mrf_device->tx_timeout_timer);
+  mrf_device->tx_timeout_timer.function = tx_timeout;
+  mrf_device->tx_timeout_timer.expires = MRF_IRQ_TX_TIMEOUT;
+  add_timer(&mrf_device->tx_timeout_timer);
+
   printk(KERN_INFO "mrf: tmp success\n");
 
  finish:
@@ -657,6 +743,10 @@ static __init int mrf_init(void) {
   printk(KERN_INFO "mrf: allocated major device numer: %d\n", MAJOR(device_id));
 
   /* initialize mrf device */
+  INIT_LIST_HEAD(&mrf_dev->tx_queue);
+  mrf_dev->tx_queue_size = 0;
+  spin_lock_init(&mrf_dev->tx_queue_lock);
+
   atomic_set(&mrf_dev->interrupt_flag, MRF_IRQ_DEFAULT);
   sema_init(&mrf_dev->driver_semaphore, 1);
   cdev_init(&mrf_dev->cdev, &mrf_fops);

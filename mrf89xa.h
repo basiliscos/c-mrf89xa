@@ -17,10 +17,19 @@
 #define MRF_TXPOWER_PLUS_10 ((0b001) << 1)
 #define MRF_TXPOWER_PLUS_13 (0)
 
+#define MRF_MAX_PAYLOAD 64
+#define MRF_MAX_TX_QUEUE 2
+
 typedef struct mrf_address {
   uint8_t node_id;
   uint32_t network_id;
 } mrf_address;
+
+
+typedef struct mrf_frame {
+  uint8_t dest;
+  uint8_t data[MRF_MAX_PAYLOAD];
+} mrf_frame;
 
 #define MRF_IOC_MAGIC 'n'
 
@@ -58,6 +67,8 @@ typedef struct mrf_address {
 #define MRF_IRQ_DEFAULT    0
 #define MRF_IRQ_IGNORE     1
 #define MRF_IRQ_PROCESSING 2
+
+#define MRF_IRQ_TX_TIMEOUT 1000
 
 /* raspberry pi has just 0-bus */
 #define MRFSPI_BUS_NO 0
