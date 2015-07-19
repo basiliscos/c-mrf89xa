@@ -68,7 +68,8 @@ typedef struct mrf_frame {
 #define MRF_IRQ_IGNORE     1
 #define MRF_IRQ_PROCESSING 2
 
-#define MRF_IRQ_TX_TIMEOUT 1000
+/* in milliseconds */
+#define MRF_IRQ_TX_TIMEOUT 50
 
 /* raspberry pi has just 0-bus */
 #define MRFSPI_BUS_NO 0

@@ -501,7 +501,7 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   /* tx timeout timer */
   init_timer(&mrf_device->tx_timeout_timer);
   mrf_device->tx_timeout_timer.function = tx_timeout;
-  mrf_device->tx_timeout_timer.expires = MRF_IRQ_TX_TIMEOUT;
+  mrf_device->tx_timeout_timer.expires = MRF_IRQ_TX_TIMEOUT * HZ / 1000;
   add_timer(&mrf_device->tx_timeout_timer);
 
   printk(KERN_INFO "mrf: tmp success\n");
