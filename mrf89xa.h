@@ -64,6 +64,7 @@ typedef struct mrf_frame {
 #define MRF_STATE_ADDRESSASSIGNED (1 << 2)
 #define MRF_STATE_FREQASSIGNED    (1 << 3)
 #define MRF_STATE_TRANSMITTING    (1 << 4)
+#define MRF_STATE_DEVICEBUSY      (1 << 5)
 
 /* in milliseconds */
 #define MRF_IRQ_TX_TIMEOUT 50

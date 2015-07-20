@@ -27,11 +27,15 @@
 
 #include <linux/interrupt.h>
 #include <linux/timer.h>
+#include <linux/workqueue.h>
+#include <linux/wait.h>
 
 #include "mrf89xa.h"
 
 #define MRFSPI_DRV_NAME "mrfspi"
 #define MRFSPI_DRV_VERSION "0.1"
+
+#define TX_WORKQUEUE_NAME "mrf-tx-wq"
 
 long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg);
 static int write_register(u8 index, u8 value);
@@ -42,6 +46,10 @@ static int set_chip_mode(u8 mode);
 static int write_fifo(u8 address, u8 length, u8* data);
 static void tx_timeout(unsigned long);
 static int _tx_queue_size(void);
+static uint32_t _device_state(void);
+static void transfer_work(struct work_struct *work);
+static int transfer_data(u8 address, u8 length, u8* data);
+
 
 static int ignore_registers = 0;
 
@@ -70,18 +78,21 @@ struct mrf_dev {
   struct gpio_desc *data_pin;
   struct gpio_desc *reset_pin;
   struct proc_dir_entry* proc_file;
+  wait_queue_head_t wait_queue;
 
   spinlock_t tx_queue_lock;
   u8 tx_queue_size;
   struct list_head tx_queue;
+  struct workqueue_struct *tx_worker;
 };
 
-/* mimics mrf_frame, but embeds size */
+/* mimics mrf_frame, but embeds size, list and work */
 struct mrf_payload {
   u8 dest;
   u8 size;
   u8 data[PAYLOAD_64];
   struct list_head list_item;
+  struct work_struct work;
 };
 
 struct mrf_dev *mrf_device = NULL;
@@ -260,10 +271,14 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
 
   /* check complete */
 
+  INIT_WORK(&payload->work, transfer_work);
+
   spin_lock(&mrf_device->tx_queue_lock);
   list_add_tail(&payload->list_item, &mrf_device->tx_queue);
   mrf_device->tx_queue_size++;
   spin_unlock(&mrf_device->tx_queue_lock);
+
+  queue_work(mrf_device->tx_worker, &payload->work);
 
  finish:
   up(&mrf_device->driver_semaphore);
@@ -458,8 +473,11 @@ static void tx_timeout(unsigned long unused) {
   printk(KERN_INFO "mrf: tx_timeout\n");
 
   spin_lock(&mrf_device->state_lock);
-  mrf_device->state &= ~(MRF_STATE_TRANSMITTING);
+  mrf_device->state &= ~MRF_STATE_TRANSMITTING;
+  mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
   spin_unlock(&mrf_device->state_lock);
+
+  wake_up(&mrf_device->wait_queue);
 }
 
 
@@ -472,14 +490,17 @@ static irqreturn_t irq1_handler(int a, void *b) {
 
   spin_lock(&mrf_device->state_lock);
   if ( mrf_device->state & MRF_STATE_TRANSMITTING ) {
-    mrf_device->state &= ~(MRF_STATE_TRANSMITTING);
+    mrf_device->state &= ~MRF_STATE_TRANSMITTING;
+    mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
     del_timer(&mrf_device->tx_timeout_timer);
+    spin_unlock(&mrf_device->state_lock);
     printk(KERN_INFO "mrf: irq1_handler / timer removed\n");
+    wake_up(&mrf_device->wait_queue);
   } else {
+    spin_unlock(&mrf_device->state_lock);
     printk(KERN_WARNING "mrf: irq1_handler is called with unknown state : 0x%X, ignoring ?\n",
            mrf_device->state);
   }
-  spin_unlock(&mrf_device->state_lock);
 
   return IRQ_HANDLED;
 }
@@ -492,10 +513,35 @@ static int set_chip_mode(u8 mode) {
   return write_register(REG_GCON, value);
 }
 
+static uint32_t _device_state(void) {
+  uint32_t got;
+  spin_lock(&mrf_device->state_lock);
+  got = mrf_device->state;
+  spin_unlock(&mrf_device->state_lock);
+  return got;
+}
+
+static void transfer_work(struct work_struct *work) {
+  int status;
+  struct mrf_payload *payload = container_of(work, struct mrf_payload, work);
+
+  wait_event(mrf_device->wait_queue, !(_device_state() & MRF_STATE_DEVICEBUSY));
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state |= MRF_STATE_DEVICEBUSY;
+  spin_unlock(&mrf_device->state_lock);
+
+  status = transfer_data(payload->dest, payload->size, payload->data);
+  spin_lock(&mrf_device->tx_queue_lock);
+  list_del(&payload->list_item);
+  mrf_device->tx_queue_size--;
+  spin_unlock(&mrf_device->tx_queue_lock);
+}
+
+
 static int transfer_data(u8 address, u8 length, u8* data) {
   int status;
   u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
-  printk(KERN_INFO "mrf: tmp set chip mode to sleep\n");
+  printk(KERN_INFO "mrf: transfer_data -> sleep_mode\n");
 
   if ((status = set_chip_mode(CHIPMODE_STBYMODE))) goto finish;
 
@@ -532,7 +578,7 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   /* start tx timeout timer */
   add_timer(&mrf_device->tx_timeout_timer);
 
-  printk(KERN_INFO "mrf: tmp success\n");
+  printk(KERN_INFO "mrf: transfer_data: success\n");
 
  finish:
   return status;
@@ -545,9 +591,9 @@ static int reset_mrf(int reinitialize) {
 
   /* disable mrf interrupts during reset */
   spin_lock(&mrf_device->state_lock);
-  mrf_device->state &= ~(MRF_STATE_ADDRESSASSIGNED);
-  mrf_device->state &= ~(MRF_STATE_FREQASSIGNED);
-  mrf_device->state &= ~(MRF_STATE_TRANSMITTING);
+  mrf_device->state &= ~MRF_STATE_ADDRESSASSIGNED;
+  mrf_device->state &= ~MRF_STATE_FREQASSIGNED;
+  mrf_device->state &= ~MRF_STATE_TRANSMITTING;
   spin_unlock(&mrf_device->state_lock);
 
   disable_irq(mrf_device->irq0);
@@ -787,6 +833,7 @@ static __init int mrf_init(void) {
   mrf_dev->tx_queue_size = 0;
   spin_lock_init(&mrf_dev->tx_queue_lock);
 
+  init_waitqueue_head(&mrf_dev->wait_queue);
   sema_init(&mrf_dev->driver_semaphore, 1);
   cdev_init(&mrf_dev->cdev, &mrf_fops);
   mrf_dev->cdev.owner = THIS_MODULE;
@@ -794,6 +841,11 @@ static __init int mrf_init(void) {
   mrf_dev->spi = spi;
   /* no need to lock */
   mrf_dev->state = 0;
+  mrf_dev->tx_worker = create_singlethread_workqueue(TX_WORKQUEUE_NAME);
+  if (! mrf_dev->tx_worker ) {
+    status = -ENOMEM;
+    goto err;
+  }
 
   mrf_device = mrf_dev;
 
@@ -838,6 +890,7 @@ static __init int mrf_init(void) {
  err:
   printk(KERN_INFO "mrf: failed\n");
   if (driver_registered) spi_unregister_driver(&mrfdev_spi_driver);
+  if (mrf_dev && mrf_dev->tx_worker) destroy_workqueue(mrf_dev->tx_worker);
   if (cdev_added) cdev_del(&mrf_device->cdev);
   if (device_id) unregister_chrdev_region(device_id, 1);
   if (mrf_dev && mrf_dev->config_pin && !IS_ERR_OR_NULL(mrf_dev->config_pin)) gpiod_put(mrf_dev->config_pin);
@@ -855,6 +908,7 @@ static void __exit mrf_exit(void) {
   /* TODO: check errors */
 
   remove_proc_entry(MRFSPI_DRV_NAME, NULL);
+  destroy_workqueue(mrf_device->tx_worker);
 
   device_id = mrf_device->cdev.dev;
 
