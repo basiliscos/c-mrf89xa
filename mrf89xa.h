@@ -63,10 +63,7 @@ typedef struct mrf_frame {
 #define MRF_STATE_DEVICEOPENED    (1 << 1)
 #define MRF_STATE_ADDRESSASSIGNED (1 << 2)
 #define MRF_STATE_FREQASSIGNED    (1 << 3)
-
-#define MRF_IRQ_DEFAULT    0
-#define MRF_IRQ_IGNORE     1
-#define MRF_IRQ_PROCESSING 2
+#define MRF_STATE_TRANSMITTING    (1 << 4)
 
 /* in milliseconds */
 #define MRF_IRQ_TX_TIMEOUT 50

@@ -56,14 +56,14 @@ MODULE_PARM_DESC(ignore_registers, "Ignore initial register values on probe.");
 
 struct mrf_dev {
   struct cdev cdev;
+  spinlock_t state_lock;
   uint32_t state;
 
   int irq0;
   int irq1;
 
-  atomic_t interrupt_flag;
   struct timer_list tx_timeout_timer;
-  /* protects access to driver, i.e. state */
+  /* protects access to driver */
   struct semaphore driver_semaphore;
   struct spi_device *spi;
   struct gpio_desc *config_pin;
@@ -126,13 +126,19 @@ static u8 default_register_values[] = {
 
 static int mrf_open(struct inode *inode, struct file *filp) {
   int status;
+  int state;
   struct gpio_desc *irq1_desc;
 
   printk(KERN_INFO "mrf: open device %p\n", mrf_device);
 
   down(&mrf_device->driver_semaphore);
 
-  if (! (mrf_device->state & MRF_STATE_DEVICEOPENED) ) {
+  spin_lock(&mrf_device->state_lock);
+  state = mrf_device->state;
+  spin_unlock(&mrf_device->state_lock);
+
+
+  if (! (state & MRF_STATE_DEVICEOPENED) ) {
     int irq0, irq1;
 
     irq0 = gpio_to_irq(IRQ0_PIN);
@@ -172,7 +178,11 @@ static int mrf_open(struct inode *inode, struct file *filp) {
     printk(KERN_INFO "mrf: irq1 %d\n", irq1);
 
     try_module_get(THIS_MODULE);
-    mrf_device->state = MRF_STATE_DEVICEOPENED;
+
+    spin_lock(&mrf_device->state_lock);
+    mrf_device->state |= MRF_STATE_DEVICEOPENED;
+    spin_unlock(&mrf_device->state_lock);
+
     status = 0; /* success */
   } else {
     status = -EBUSY;
@@ -197,7 +207,10 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   free_irq(mrf_device->irq1, mrf_device);
 
   module_put(THIS_MODULE);
+
+  spin_lock(&mrf_device->state_lock);
   mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
+  spin_unlock(&mrf_device->state_lock);
 
   up(&mrf_device->driver_semaphore);
   return 0;
@@ -443,7 +456,10 @@ static int initialize_registers(void) {
 
 static void tx_timeout(unsigned long unused) {
   printk(KERN_INFO "mrf: tx_timeout\n");
-  atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT);
+
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state &= ~(MRF_STATE_TRANSMITTING);
+  spin_unlock(&mrf_device->state_lock);
 }
 
 
@@ -453,13 +469,18 @@ static irqreturn_t irq0_handler(int a, void *b) {
 }
 
 static irqreturn_t irq1_handler(int a, void *b) {
-  int flag = atomic_cmpxchg(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT, MRF_IRQ_PROCESSING);
-  if ( flag == MRF_IRQ_DEFAULT ) {
-    printk(KERN_INFO "mrf: irq1_handler\n");
-    atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT);
-  }else if (flag == MRF_IRQ_PROCESSING) {
-    printk(KERN_WARNING "mrf: irq1_handler is called during other interrupt processing?\n");
+
+  spin_lock(&mrf_device->state_lock);
+  if ( mrf_device->state & MRF_STATE_TRANSMITTING ) {
+    mrf_device->state &= ~(MRF_STATE_TRANSMITTING);
+    del_timer(&mrf_device->tx_timeout_timer);
+    printk(KERN_INFO "mrf: irq1_handler / timer removed\n");
+  } else {
+    printk(KERN_WARNING "mrf: irq1_handler is called with unknown state : 0x%X, ignoring ?\n",
+           mrf_device->state);
   }
+  spin_unlock(&mrf_device->state_lock);
+
   return IRQ_HANDLED;
 }
 
@@ -500,8 +521,15 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   }
   /* tx timeout timer */
   init_timer(&mrf_device->tx_timeout_timer);
+
   mrf_device->tx_timeout_timer.function = tx_timeout;
-  mrf_device->tx_timeout_timer.expires = MRF_IRQ_TX_TIMEOUT * HZ / 1000;
+  mrf_device->tx_timeout_timer.expires = jiffies + MRF_IRQ_TX_TIMEOUT * HZ / 1000;
+
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state |= MRF_STATE_TRANSMITTING;
+  spin_unlock(&mrf_device->state_lock);
+
+  /* start tx timeout timer */
   add_timer(&mrf_device->tx_timeout_timer);
 
   printk(KERN_INFO "mrf: tmp success\n");
@@ -516,9 +544,14 @@ static int reset_mrf(int reinitialize) {
   down(&mrf_device->driver_semaphore);
 
   /* disable mrf interrupts during reset */
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state &= ~(MRF_STATE_ADDRESSASSIGNED);
+  mrf_device->state &= ~(MRF_STATE_FREQASSIGNED);
+  mrf_device->state &= ~(MRF_STATE_TRANSMITTING);
+  spin_unlock(&mrf_device->state_lock);
+
   disable_irq(mrf_device->irq0);
   disable_irq(mrf_device->irq1);
-  atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_IGNORE);
 
   gpiod_set_value(mrf_device->reset_pin, 1);
 
@@ -537,7 +570,6 @@ static int reset_mrf(int reinitialize) {
 
  finish:
   /* restore interrupt handlers */
-  atomic_set(&mrf_device->interrupt_flag, MRF_IRQ_DEFAULT);
   enable_irq(mrf_device->irq0);
   enable_irq(mrf_device->irq1);
 
@@ -580,7 +612,10 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
       write_register_protected(REG_SYNC_WORD_2, network_parts[1]);
       write_register_protected(REG_SYNC_WORD_3, network_parts[2]);
       write_register_protected(REG_SYNC_WORD_4, network_parts[3]);
+
+      spin_lock(&mrf_device->state_lock);
       mrf_device->state |= MRF_STATE_ADDRESSASSIGNED;
+      spin_unlock(&mrf_device->state_lock);
     }
     break;
   case MRF_IOC_SETFREQ:
@@ -590,7 +625,10 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
       write_register_protected(REG_R1C, *rps++);
       write_register_protected(REG_P1C, *rps++);
       write_register_protected(REG_S1C, *rps++);
+
+      spin_lock(&mrf_device->state_lock);
       mrf_device->state |= MRF_STATE_FREQASSIGNED;
+      spin_unlock(&mrf_device->state_lock);
     }
     break;
   case MRF_IOC_SETPOWER:
@@ -639,6 +677,8 @@ static int mrfdev_probe(struct spi_device *spi) {
     /* success */
     printk(KERN_INFO "mrf: device found\n");
     status = 0;
+
+    /* no need to lock, invoked only once from init */
     mrf_device->state |= MRF_STATE_DEVICEFOUND;
   }
   else {
@@ -747,12 +787,12 @@ static __init int mrf_init(void) {
   mrf_dev->tx_queue_size = 0;
   spin_lock_init(&mrf_dev->tx_queue_lock);
 
-  atomic_set(&mrf_dev->interrupt_flag, MRF_IRQ_DEFAULT);
   sema_init(&mrf_dev->driver_semaphore, 1);
   cdev_init(&mrf_dev->cdev, &mrf_fops);
   mrf_dev->cdev.owner = THIS_MODULE;
   mrf_dev->cdev.ops = &mrf_fops;
   mrf_dev->spi = spi;
+  /* no need to lock */
   mrf_dev->state = 0;
 
   mrf_device = mrf_dev;
@@ -773,7 +813,7 @@ static __init int mrf_init(void) {
     goto err;
   }
   driver_registered = 1;
-  /* check that probe succeed */
+  /* check that probe succeed; no need to lock */
   if ( !(mrf_device->state & MRF_STATE_DEVICEFOUND)) {
     printk(KERN_INFO "mrf: device hasn't been probed successfully\n");
     status = -ENODEV;
