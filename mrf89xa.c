@@ -45,7 +45,6 @@ static irqreturn_t irq1_handler(int, void *);
 static int set_chip_mode(u8 mode);
 static int write_fifo(u8 address, u8 length, u8* data);
 static void tx_timeout(unsigned long);
-static int _tx_queue_size(void);
 
 static uint32_t _device_state(void);
 static uint32_t _device_acquire(void);
@@ -82,10 +81,11 @@ struct mrf_dev {
   struct gpio_desc *data_pin;
   struct gpio_desc *reset_pin;
   struct proc_dir_entry* proc_file;
-  wait_queue_head_t wait_queue;
+  wait_queue_head_t device_wait_queue;
+  wait_queue_head_t tx_wait_queue;
 
   spinlock_t tx_queue_lock;
-  u8 tx_queue_size;
+  atomic_t tx_queue_size;
   struct list_head tx_queue;
   struct workqueue_struct *tx_worker;
 };
@@ -219,7 +219,9 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   down(&mrf_device->driver_semaphore);
 
   /* wait until tx queue be empty */
-  wait_event(mrf_device->wait_queue, (_tx_queue_size() == 0));
+  wait_event(mrf_device->tx_wait_queue, atomic_read(&mrf_device->tx_queue_size) == 0);
+  /* wait until all frames will be actually sent */
+  _device_acquire();
 
   free_irq(mrf_device->irq0, mrf_device);
   free_irq(mrf_device->irq1, mrf_device);
@@ -230,6 +232,7 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
   spin_unlock(&mrf_device->state_lock);
 
+  _device_release();
   up(&mrf_device->driver_semaphore);
   return 0;
 }
@@ -243,11 +246,9 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
   down(&mrf_device->driver_semaphore);
 
   /* queue size could extrenally be decreased only */
-  if ((filp->f_flags & O_NONBLOCK) && (_tx_queue_size() >= MRF_MAX_TX_QUEUE)) {
+  if ((filp->f_flags & O_NONBLOCK) && (atomic_read(&mrf_device->tx_queue_size) >= MRF_MAX_TX_QUEUE)) {
     status = -EAGAIN;
     goto finish;
-  } else {
-    wait_event(mrf_device->wait_queue, (_tx_queue_size() < MRF_MAX_TX_QUEUE));
   }
 
   /* check input data */
@@ -282,9 +283,14 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
 
   INIT_WORK(&payload->work, transfer_work);
 
+  /* wait until there will be enought space in queue */
+  if (!(filp->f_flags & O_NONBLOCK)) {
+    wait_event(mrf_device->tx_wait_queue, atomic_read(&mrf_device->tx_queue_size) < MRF_MAX_TX_QUEUE);
+  }
+
+  atomic_inc(&mrf_device->tx_queue_size);
   spin_lock(&mrf_device->tx_queue_lock);
   list_add_tail(&payload->list_item, &mrf_device->tx_queue);
-  mrf_device->tx_queue_size++;
   spin_unlock(&mrf_device->tx_queue_lock);
 
   queue_work(mrf_device->tx_worker, &payload->work);
@@ -293,7 +299,7 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
  finish:
   up(&mrf_device->driver_semaphore);
   if (status <0 && payload) kfree(payload);
-  printk(KERN_INFO "mrf: write status = %d, queue size = %d\n", status, mrf_device->tx_queue_size);
+  printk(KERN_INFO "mrf: write status = %d, queue size = %d\n", status, atomic_read(&mrf_device->tx_queue_size));
   return status;
 }
 
@@ -309,15 +315,6 @@ static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *of
   /* } */
   return bytes_read;
 }
-
-static int _tx_queue_size(void) {
-  int result;
-  spin_lock(&mrf_device->tx_queue_lock);
-  result = mrf_device->tx_queue_size;
-  spin_unlock(&mrf_device->tx_queue_lock);
-  return result;
-}
-
 
 static int mrf_dump_stats(struct seq_file *m, void *v){
   int i, j;
@@ -490,7 +487,7 @@ static void tx_timeout(unsigned long unused) {
   mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
   spin_unlock(&mrf_device->state_lock);
 
-  wake_up(&mrf_device->wait_queue);
+  wake_up(&mrf_device->device_wait_queue);
 }
 
 /* assumption: device is already acquired */
@@ -510,7 +507,7 @@ static irqreturn_t irq1_handler(int a, void *b) {
     del_timer(&mrf_device->tx_timeout_timer);
     spin_unlock(&mrf_device->state_lock);
     printk(KERN_INFO "mrf: irq1_handler / timer removed\n");
-    wake_up(&mrf_device->wait_queue);
+    wake_up(&mrf_device->device_wait_queue);
   } else {
     spin_unlock(&mrf_device->state_lock);
     printk(KERN_WARNING "mrf: irq1_handler is called with unknown state : 0x%X, ignoring ?\n",
@@ -538,7 +535,7 @@ static uint32_t _device_state(void) {
 
 static uint32_t _device_acquire(void) {
   uint32_t status;
-  wait_event(mrf_device->wait_queue, !(_device_state() & MRF_STATE_DEVICEBUSY));
+  wait_event(mrf_device->device_wait_queue, !(_device_state() & MRF_STATE_DEVICEBUSY));
   spin_lock(&mrf_device->state_lock);
   mrf_device->state |= MRF_STATE_DEVICEBUSY;
   status = mrf_device->state;
@@ -550,7 +547,7 @@ static void _device_release(void) {
   spin_lock(&mrf_device->state_lock);
   mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
   spin_unlock(&mrf_device->state_lock);
-  wake_up(&mrf_device->wait_queue);
+  wake_up(&mrf_device->device_wait_queue);
 }
 
 static void transfer_work(struct work_struct *work) {
@@ -560,9 +557,10 @@ static void transfer_work(struct work_struct *work) {
   status = transfer_data(payload->dest, payload->size, payload->data);
   spin_lock(&mrf_device->tx_queue_lock);
   list_del(&payload->list_item);
-  mrf_device->tx_queue_size--;
   spin_unlock(&mrf_device->tx_queue_lock);
+  atomic_dec(&mrf_device->tx_queue_size);
 
+  wake_up(&mrf_device->tx_wait_queue);
   kfree(payload);
 }
 
@@ -893,10 +891,11 @@ static __init int mrf_init(void) {
 
   /* initialize mrf device */
   INIT_LIST_HEAD(&mrf_dev->tx_queue);
-  mrf_dev->tx_queue_size = 0;
+  atomic_set(&mrf_dev->tx_queue_size, 0);
   spin_lock_init(&mrf_dev->tx_queue_lock);
 
-  init_waitqueue_head(&mrf_dev->wait_queue);
+  init_waitqueue_head(&mrf_dev->device_wait_queue);
+  init_waitqueue_head(&mrf_dev->tx_wait_queue);
   sema_init(&mrf_dev->driver_semaphore, 1);
   cdev_init(&mrf_dev->cdev, &mrf_fops);
   mrf_dev->cdev.owner = THIS_MODULE;
