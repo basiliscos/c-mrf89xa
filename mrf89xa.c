@@ -584,10 +584,8 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   return status;
 }
 
-static int reset_mrf(int reinitialize) {
+static int cmd_reset(int reinitialize) {
   int status;
-
-  down(&mrf_device->driver_semaphore);
 
   /* disable mrf interrupts during reset */
   spin_lock(&mrf_device->state_lock);
@@ -619,7 +617,62 @@ static int reset_mrf(int reinitialize) {
   enable_irq(mrf_device->irq0);
   enable_irq(mrf_device->irq1);
 
-  up(&mrf_device->driver_semaphore);
+  return status;
+}
+
+static int cmd_setaddress(mrf_address *addr) {
+  int status = 0;
+  u8 node_id = addr->node_id;
+  u32 network_id = cpu_to_be32(addr->network_id);
+  uint8_t *network_parts = (uint8_t*) &network_id;
+  if (node_id == MRF_BROADCAST_NODEADDR ) {
+    status = -ENOTTY;
+    goto finish;
+  }
+
+  printk(KERN_INFO "mrf: set node address: 0x%.2x / 0x%x\n", node_id, network_id);
+
+  status = write_register(REG_NADDS, node_id); if(status) goto finish;
+  status = write_register(REG_SYNC_WORD_1, network_parts[0]); if(status) goto finish;
+  status = write_register(REG_SYNC_WORD_2, network_parts[1]); if(status) goto finish;
+  status = write_register(REG_SYNC_WORD_3, network_parts[2]); if(status) goto finish;
+  status = write_register(REG_SYNC_WORD_4, network_parts[3]); if(status) goto finish;
+
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state |= MRF_STATE_ADDRESSASSIGNED;
+  spin_unlock(&mrf_device->state_lock);
+
+ finish:
+  return status;
+}
+
+static int cmd_setpower(uint8_t value) {
+  int status = 0;
+  printk(KERN_INFO "mrf: set power to: 0x%.2x\n", value);
+  status = write_register(REG_TXCON, (FC_400 | value));
+  return status;
+}
+
+static int cmd_debug(unsigned long arg) {
+  u8 data[5] = {0x1, 0x2, 0x3, 0x4, 0xFF};
+  u8 dst = 0x0; /* broadcast address */
+  return transfer_data(dst, ARRAY_SIZE(data), data);
+}
+
+static int cmd_setfreq(unsigned long arg) {
+  int status;
+  uint32_t value = cpu_to_be32(arg);
+  uint8_t *rps = (uint8_t*) &value;
+
+  status = write_register(REG_R1C, *rps++); if(status) goto finish;
+  status = write_register(REG_P1C, *rps++); if(status) goto finish;
+  status = write_register(REG_S1C, *rps++); if(status) goto finish;
+
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state |= MRF_STATE_FREQASSIGNED;
+  spin_unlock(&mrf_device->state_lock);
+
+ finish:
   return status;
 }
 
@@ -639,63 +692,29 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
   if (status) return -EFAULT;
 
   printk(KERN_INFO "mrf: ioctl switch\n");
+  down(&mrf_device->driver_semaphore);
+
   switch(cmd) {
   case MRF_IOC_RESET:
-    reset_mrf(arg);
+    cmd_reset(arg);
     break;
   case MRF_IOC_SETADDR:
-    {
-      mrf_address *addr = (mrf_address*) arg;
-      u32 network_id = cpu_to_be32(addr->network_id);
-      uint8_t *network_parts = (uint8_t*) &network_id;
-      if (addr->node_id == MRF_BROADCAST_NODEADDR ) {
-        status = -ENOTTY;
-        goto finish;
-      }
-      printk(KERN_INFO "mrf: set node address: 0x%.2x\n", addr->node_id);
-      write_register_protected(REG_NADDS, addr->node_id);
-      write_register_protected(REG_SYNC_WORD_1, network_parts[0]);
-      write_register_protected(REG_SYNC_WORD_2, network_parts[1]);
-      write_register_protected(REG_SYNC_WORD_3, network_parts[2]);
-      write_register_protected(REG_SYNC_WORD_4, network_parts[3]);
-
-      spin_lock(&mrf_device->state_lock);
-      mrf_device->state |= MRF_STATE_ADDRESSASSIGNED;
-      spin_unlock(&mrf_device->state_lock);
-    }
+    status = cmd_setaddress((mrf_address*) arg);
     break;
   case MRF_IOC_SETFREQ:
-    {
-      uint32_t value = cpu_to_be32(arg);
-      uint8_t *rps = (uint8_t*) &value;
-      write_register_protected(REG_R1C, *rps++);
-      write_register_protected(REG_P1C, *rps++);
-      write_register_protected(REG_S1C, *rps++);
-
-      spin_lock(&mrf_device->state_lock);
-      mrf_device->state |= MRF_STATE_FREQASSIGNED;
-      spin_unlock(&mrf_device->state_lock);
-    }
+    status = cmd_setfreq(arg);
     break;
   case MRF_IOC_SETPOWER:
-    {
-      uint8_t power_level = (uint8_t) arg;
-      printk(KERN_INFO "mrf: set power to: 0x%.2x\n", power_level);
-      write_register_protected(REG_TXCON, (FC_400 | power_level));
-    }
+    status = cmd_setpower((uint8_t) arg);
     break;
   case MRF_IOC_DEBUG:
-    {
-      u8 data[5] = {0x1, 0x2, 0x3, 0x4, 0xFF};
-      u8 dst = 0x0; /* broadcast address */
-      transfer_data(dst, ARRAY_SIZE(data), data);
-    }
+    status = cmd_debug(arg);
     break;
   default:  /* redundant, as cmd was checked against MAXNR */
     return -ENOTTY;
   };
 
- finish:
+  up(&mrf_device->driver_semaphore);
   printk(KERN_INFO "mrf: ioctl result: %d\n", status);
   return status;
 }
