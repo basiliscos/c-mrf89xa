@@ -243,6 +243,8 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
   if ((filp->f_flags & O_NONBLOCK) && (_tx_queue_size() >= MRF_MAX_TX_QUEUE)) {
     status = -EAGAIN;
     goto finish;
+  } else {
+    wait_event(mrf_device->wait_queue, (_tx_queue_size() < MRF_MAX_TX_QUEUE));
   }
 
   /* check input data */
@@ -288,7 +290,7 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
  finish:
   up(&mrf_device->driver_semaphore);
   if (status <0 && payload) kfree(payload);
-  printk(KERN_INFO "mrf: write status = %d\n", status);
+  printk(KERN_INFO "mrf: write status = %d, queue size = %d\n", status, mrf_device->tx_queue_size);
   return status;
 }
 
