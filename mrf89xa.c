@@ -46,7 +46,11 @@ static int set_chip_mode(u8 mode);
 static int write_fifo(u8 address, u8 length, u8* data);
 static void tx_timeout(unsigned long);
 static int _tx_queue_size(void);
+
 static uint32_t _device_state(void);
+static uint32_t _device_acquire(void);
+static void _device_release(void);
+
 static void transfer_work(struct work_struct *work);
 static int transfer_data(u8 address, u8 length, u8* data);
 
@@ -469,28 +473,32 @@ static int initialize_registers(void) {
   return status;
 }
 
+/* assumption: device is already acquired */
 static void tx_timeout(unsigned long unused) {
   printk(KERN_INFO "mrf: tx_timeout\n");
 
   spin_lock(&mrf_device->state_lock);
   mrf_device->state &= ~MRF_STATE_TRANSMITTING;
+  /* release device */
   mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
   spin_unlock(&mrf_device->state_lock);
 
   wake_up(&mrf_device->wait_queue);
 }
 
-
+/* assumption: device is already acquired */
 static irqreturn_t irq0_handler(int a, void *b) {
   printk(KERN_INFO "mrf: irq0_handler\n");
   return IRQ_HANDLED;
 }
 
+/* assumption: device is already acquired */
 static irqreturn_t irq1_handler(int a, void *b) {
 
   spin_lock(&mrf_device->state_lock);
   if ( mrf_device->state & MRF_STATE_TRANSMITTING ) {
     mrf_device->state &= ~MRF_STATE_TRANSMITTING;
+    /* release device */
     mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
     del_timer(&mrf_device->tx_timeout_timer);
     spin_unlock(&mrf_device->state_lock);
@@ -521,6 +529,23 @@ static uint32_t _device_state(void) {
   return got;
 }
 
+static uint32_t _device_acquire(void) {
+  uint32_t status;
+  wait_event(mrf_device->wait_queue, !(_device_state() & MRF_STATE_DEVICEBUSY));
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state |= MRF_STATE_DEVICEBUSY;
+  status = mrf_device->state;
+  spin_unlock(&mrf_device->state_lock);
+  return status;
+}
+
+static void _device_release(void) {
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
+  spin_unlock(&mrf_device->state_lock);
+  wake_up(&mrf_device->wait_queue);
+}
+
 static void transfer_work(struct work_struct *work) {
   int status;
   struct mrf_payload *payload = container_of(work, struct mrf_payload, work);
@@ -540,7 +565,11 @@ static void transfer_work(struct work_struct *work) {
 
 static int transfer_data(u8 address, u8 length, u8* data) {
   int status;
-  u8 access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
+  u8 access;
+
+  /* will be released either in irq handler or tx-timeout callback */
+  _device_acquire();
+  access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
   printk(KERN_INFO "mrf: transfer_data -> sleep_mode\n");
 
   if ((status = set_chip_mode(CHIPMODE_STBYMODE))) goto finish;
@@ -586,14 +615,18 @@ static int transfer_data(u8 address, u8 length, u8* data) {
 
 static int cmd_reset(int reinitialize) {
   int status;
+  int state;
 
-  /* disable mrf interrupts during reset */
+  state = _device_acquire();
+
+  state &= ~MRF_STATE_ADDRESSASSIGNED;
+  state &= ~MRF_STATE_FREQASSIGNED;
+  state &= ~MRF_STATE_TRANSMITTING;
   spin_lock(&mrf_device->state_lock);
-  mrf_device->state &= ~MRF_STATE_ADDRESSASSIGNED;
-  mrf_device->state &= ~MRF_STATE_FREQASSIGNED;
-  mrf_device->state &= ~MRF_STATE_TRANSMITTING;
+  mrf_device->state = state;
   spin_unlock(&mrf_device->state_lock);
 
+  /* disable mrf interrupts during reset */
   disable_irq(mrf_device->irq0);
   disable_irq(mrf_device->irq1);
 
@@ -617,6 +650,7 @@ static int cmd_reset(int reinitialize) {
   enable_irq(mrf_device->irq0);
   enable_irq(mrf_device->irq1);
 
+  _device_release();
   return status;
 }
 
@@ -630,6 +664,7 @@ static int cmd_setaddress(mrf_address *addr) {
     goto finish;
   }
 
+  _device_acquire();
   printk(KERN_INFO "mrf: set node address: 0x%.2x / 0x%x\n", node_id, network_id);
 
   status = write_register(REG_NADDS, node_id); if(status) goto finish;
@@ -643,13 +678,18 @@ static int cmd_setaddress(mrf_address *addr) {
   spin_unlock(&mrf_device->state_lock);
 
  finish:
+  _device_release();
   return status;
 }
 
 static int cmd_setpower(uint8_t value) {
   int status = 0;
+
+  _device_acquire();
   printk(KERN_INFO "mrf: set power to: 0x%.2x\n", value);
   status = write_register(REG_TXCON, (FC_400 | value));
+  _device_release();
+
   return status;
 }
 
