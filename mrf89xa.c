@@ -218,6 +218,9 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   printk(KERN_INFO "mrf: release device\n");
   down(&mrf_device->driver_semaphore);
 
+  /* wait until tx queue be empty */
+  wait_event(mrf_device->wait_queue, (_tx_queue_size() == 0));
+
   free_irq(mrf_device->irq0, mrf_device);
   free_irq(mrf_device->irq1, mrf_device);
 
