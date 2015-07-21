@@ -246,10 +246,10 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
   }
 
   /* check input data */
-  if (offset) { status = -EINVAL; goto finish; }
   data_size = length - sizeof(((mrf_frame*)0)->dest);
   if (data_size <= 0) {
     /* nothing to send? */
+    printk(KERN_WARNING "mrf: write: wrong data size %d)\n", data_size);
     status = -EINVAL;
     goto finish;
   }
@@ -264,7 +264,7 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
   }
 
   status = __get_user(dest, (u8*)buff);
-  if ( !status) { goto finish; }
+  if (status) { goto finish; }
   payload->dest = dest;
 
   if (copy_from_user(&payload->data, buff + sizeof(u8), data_size)) {
@@ -283,10 +283,12 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
   spin_unlock(&mrf_device->tx_queue_lock);
 
   queue_work(mrf_device->tx_worker, &payload->work);
+  status = length;
 
  finish:
   up(&mrf_device->driver_semaphore);
   if (status <0 && payload) kfree(payload);
+  printk(KERN_INFO "mrf: write status = %d\n", status);
   return status;
 }
 
@@ -550,16 +552,13 @@ static void transfer_work(struct work_struct *work) {
   int status;
   struct mrf_payload *payload = container_of(work, struct mrf_payload, work);
 
-  wait_event(mrf_device->wait_queue, !(_device_state() & MRF_STATE_DEVICEBUSY));
-  spin_lock(&mrf_device->state_lock);
-  mrf_device->state |= MRF_STATE_DEVICEBUSY;
-  spin_unlock(&mrf_device->state_lock);
-
   status = transfer_data(payload->dest, payload->size, payload->data);
   spin_lock(&mrf_device->tx_queue_lock);
   list_del(&payload->list_item);
   mrf_device->tx_queue_size--;
   spin_unlock(&mrf_device->tx_queue_lock);
+
+  kfree(payload);
 }
 
 
