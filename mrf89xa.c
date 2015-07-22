@@ -618,6 +618,9 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   if ((status = write_fifo(address, length, data))) {
     goto finish;
   }
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state |= MRF_STATE_TRANSMITTING;
+  spin_unlock(&mrf_device->state_lock);
   if ((status = set_chip_mode(CHIPMODE_TX))) {
     goto finish;
   }
@@ -626,10 +629,6 @@ static int transfer_data(u8 address, u8 length, u8* data) {
 
   mrf_device->tx_timeout_timer.function = tx_timeout;
   mrf_device->tx_timeout_timer.expires = jiffies + MRF_IRQ_TX_TIMEOUT * HZ / 1000;
-
-  spin_lock(&mrf_device->state_lock);
-  mrf_device->state |= MRF_STATE_TRANSMITTING;
-  spin_unlock(&mrf_device->state_lock);
 
   /* start tx timeout timer */
   add_timer(&mrf_device->tx_timeout_timer);
