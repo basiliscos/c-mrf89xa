@@ -66,6 +66,12 @@ typedef struct mrf_frame {
 #define MRF_STATE_TRANSMITTING    (1 << 4)
 #define MRF_STATE_DEVICEBUSY      (1 << 5)
 
+#ifdef MRF_DEBUG
+#define MRF_PRINT_DEBUG(fmt, args...) printk( KERN_INFO "mrf: " fmt, ## args)
+#else
+#define MRF_PRINT_DEBUG(fmt, args...) /* do nothing */
+#endif
+
 /* in milliseconds */
 #define MRF_IRQ_TX_TIMEOUT 50
 
