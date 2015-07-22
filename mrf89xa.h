@@ -18,7 +18,7 @@
 #define MRF_TXPOWER_PLUS_13 (0)
 
 #define MRF_MAX_PAYLOAD 64
-#define MRF_MAX_TX_QUEUE 2
+#define MRF_MAX_TX_QUEUE 10
 
 typedef struct mrf_address {
   uint8_t node_id;
@@ -71,6 +71,12 @@ typedef struct mrf_frame {
 
 /* raspberry pi has just 0-bus */
 #define MRFSPI_BUS_NO 0
+
+/* 6 MHz */
+#define MRFSPI_CONFIG_SPEED (6000000*2)
+/* 1 MHz */
+#define MRFSPI_DATA_SPEED (1000000*2)
+
 
 #define CMD_READ_REGISTER(N) (0x40 | (N << 1))
 

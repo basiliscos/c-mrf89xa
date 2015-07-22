@@ -215,13 +215,19 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 }
 
 static int mrf_release(struct inode *inode, struct file *filp) {
+  int device_is_ready = 0;
   printk(KERN_INFO "mrf: release device\n");
   down(&mrf_device->driver_semaphore);
 
   /* wait until tx queue be empty */
   wait_event(mrf_device->tx_wait_queue, atomic_read(&mrf_device->tx_queue_size) == 0);
   /* wait until all frames will be actually sent */
-  _device_acquire();
+
+  while(!device_is_ready) {
+    spin_lock(&mrf_device->state_lock);
+    device_is_ready = !(mrf_device->state & MRF_STATE_DEVICEBUSY);
+    spin_unlock(&mrf_device->state_lock);
+  }
 
   free_irq(mrf_device->irq0, mrf_device);
   free_irq(mrf_device->irq1, mrf_device);
@@ -232,7 +238,6 @@ static int mrf_release(struct inode *inode, struct file *filp) {
   mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
   spin_unlock(&mrf_device->state_lock);
 
-  _device_release();
   up(&mrf_device->driver_semaphore);
   return 0;
 }
@@ -299,7 +304,8 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
  finish:
   up(&mrf_device->driver_semaphore);
   if (status <0 && payload) kfree(payload);
-  printk(KERN_INFO "mrf: write status = %d, queue size = %d\n", status, atomic_read(&mrf_device->tx_queue_size));
+  printk(KERN_INFO "mrf: write status = %d, queue size = %d, length = %d\n",
+         status, atomic_read(&mrf_device->tx_queue_size), length);
   return status;
 }
 
@@ -405,11 +411,39 @@ static struct file_operations mrf_proc_fops = {
   .release	      = single_release,
 };
 
+static u8 read_register(u8 index) {
+  u8 value;
+  u8 cmd_buff[] = {CMD_READ_REGISTER(index)};
+  struct spi_transfer t[] = {
+    {
+      .tx_buf	= &cmd_buff,
+      .len		= 1,
+      .speed_hz = MRFSPI_CONFIG_SPEED,
+    },
+    {
+      .rx_buf   = &value,
+      .len		= 1,
+      .speed_hz = MRFSPI_CONFIG_SPEED,
+    },
+  };
+  int status;
+
+  gpiod_set_value(mrf_device->config_pin, 0);
+  status = spi_sync_transfer(mrf_device->spi, t, ARRAY_SIZE(t));
+  gpiod_set_value(mrf_device->config_pin, 1);
+  return value;
+}
 static int write_register(u8 index, u8 value) {
   u8 buff[] = {index << 1, value};
+  struct spi_transfer t = {
+    .tx_buf		= &buff,
+    .len		= ARRAY_SIZE(buff),
+    .speed_hz   = MRFSPI_CONFIG_SPEED,
+  };
   int status;
+
   gpiod_set_value(mrf_device->config_pin, 0);
-  status = spi_write(mrf_device->spi, buff, ARRAY_SIZE(buff));
+  status = spi_sync_transfer(mrf_device->spi, &t, 1);
   gpiod_set_value(mrf_device->config_pin, 1);
 
   return status;
@@ -425,8 +459,10 @@ static int write_fifo(u8 address, u8 length, u8* data) {
     .tx_buf		= &total_lenght,
     /* the same for all transfers */
     .len		= 1,
-    /* .speed_hz   = 500000, */
+    .speed_hz   = MRFSPI_DATA_SPEED,
   };
+
+  printk(KERN_INFO "mrf: write_fifo start (%d)\n", length);
 
   /* trashfer length */
   gpiod_set_value(mrf_device->data_pin, 0);
@@ -451,15 +487,8 @@ static int write_fifo(u8 address, u8 length, u8* data) {
   }
 
  finish:
+  printk(KERN_INFO "mrf: write_fifo finisht\n");
   return status;
-}
-
-static u8 read_register(u8 index) {
-  u8 value;
-  gpiod_set_value(mrf_device->config_pin, 0);
-  value = spi_w8r8(mrf_device->spi, CMD_READ_REGISTER(index));
-  gpiod_set_value(mrf_device->config_pin, 1);
-  return value;
 }
 
 static int initialize_registers(void) {
@@ -487,7 +516,7 @@ static void tx_timeout(unsigned long unused) {
   mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
   spin_unlock(&mrf_device->state_lock);
 
-  wake_up(&mrf_device->device_wait_queue);
+  /* wake_up(&mrf_device->device_wait_queue); */
 }
 
 /* assumption: device is already acquired */
@@ -498,16 +527,16 @@ static irqreturn_t irq0_handler(int a, void *b) {
 
 /* assumption: device is already acquired */
 static irqreturn_t irq1_handler(int a, void *b) {
+  printk(KERN_INFO "mrf: irq1_handler\n");
 
   spin_lock(&mrf_device->state_lock);
   if ( mrf_device->state & MRF_STATE_TRANSMITTING ) {
     mrf_device->state &= ~MRF_STATE_TRANSMITTING;
     /* release device */
     mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
-    del_timer(&mrf_device->tx_timeout_timer);
     spin_unlock(&mrf_device->state_lock);
-    printk(KERN_INFO "mrf: irq1_handler / timer removed\n");
-    wake_up(&mrf_device->device_wait_queue);
+    del_timer(&mrf_device->tx_timeout_timer);
+    /* wake_up(&mrf_device->device_wait_queue); */
   } else {
     spin_unlock(&mrf_device->state_lock);
     printk(KERN_WARNING "mrf: irq1_handler is called with unknown state : 0x%X, ignoring ?\n",
@@ -535,7 +564,7 @@ static uint32_t _device_state(void) {
 
 static uint32_t _device_acquire(void) {
   uint32_t status;
-  wait_event(mrf_device->device_wait_queue, !(_device_state() & MRF_STATE_DEVICEBUSY));
+  /* wait_event(mrf_device->device_wait_queue, !(_device_state() & MRF_STATE_DEVICEBUSY)); */
   spin_lock(&mrf_device->state_lock);
   mrf_device->state |= MRF_STATE_DEVICEBUSY;
   status = mrf_device->state;
@@ -547,12 +576,15 @@ static void _device_release(void) {
   spin_lock(&mrf_device->state_lock);
   mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
   spin_unlock(&mrf_device->state_lock);
-  wake_up(&mrf_device->device_wait_queue);
+  /* wake_up(&mrf_device->device_wait_queue); */
 }
 
 static void transfer_work(struct work_struct *work) {
   int status;
-  struct mrf_payload *payload = container_of(work, struct mrf_payload, work);
+  struct mrf_payload *payload;
+  printk(KERN_INFO "mrf: transfer_work start\n");
+
+  payload = container_of(work, struct mrf_payload, work);
 
   status = transfer_data(payload->dest, payload->size, payload->data);
   spin_lock(&mrf_device->tx_queue_lock);
@@ -562,6 +594,7 @@ static void transfer_work(struct work_struct *work) {
 
   wake_up(&mrf_device->tx_wait_queue);
   kfree(payload);
+  printk(KERN_INFO "mrf: transfer_work end\n");
 }
 
 
@@ -571,8 +604,8 @@ static int transfer_data(u8 address, u8 length, u8* data) {
 
   /* will be released either in irq handler or tx-timeout callback */
   _device_acquire();
+  printk(KERN_INFO "mrf: transfer_data (%d bytes) -> sleep_mode\n", length);
   access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
-  printk(KERN_INFO "mrf: transfer_data -> sleep_mode\n");
 
   if ((status = set_chip_mode(CHIPMODE_STBYMODE))) goto finish;
 
@@ -590,7 +623,7 @@ static int transfer_data(u8 address, u8 length, u8* data) {
     goto finish;
   }
   /* send to broadcast address some dummy data*/
-  if ((status = write_fifo(0x00, length, data))) {
+  if ((status = write_fifo(address, length, data))) {
     goto finish;
   }
   if ((status = set_chip_mode(CHIPMODE_TX))) {
