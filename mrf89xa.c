@@ -84,12 +84,18 @@ struct mrf_dev {
   struct gpio_desc *data_pin;
   struct gpio_desc *reset_pin;
   struct proc_dir_entry* proc_file;
-  wait_queue_head_t tx_wait_queue;
   wait_queue_head_t device_wait_queue;
 
   spinlock_t tx_queue_lock;
   atomic_t tx_queue_size;
   struct list_head tx_queue;
+  wait_queue_head_t tx_wait_queue;
+
+  spinlock_t rx_queue_lock;
+  atomic_t rx_queue_size;
+  struct list_head rx_queue;
+  wait_queue_head_t rx_wait_queue;
+
   struct workqueue_struct *tx_worker;
 };
 
@@ -221,19 +227,32 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 }
 
 static int mrf_release(struct inode *inode, struct file *filp) {
+  struct mrf_payload *frame, *tmp_frame;
   MRF_PRINT_DEBUG("release device, queue_size = %d\n", atomic_read(&mrf_device->tx_queue_size));
   down(&mrf_device->driver_semaphore);
 
   /* wait until tx queue be empty */
-  MRF_PRINT_DEBUG("release device, 1\n");
   wait_event(mrf_device->tx_wait_queue, atomic_read(&mrf_device->tx_queue_size) == 0);
   /* wait until all frames will be actually sent */
 
-  MRF_PRINT_DEBUG("release device, 2\n");
   wait_event(mrf_device->device_wait_queue, atomic_read(&mrf_device->device_busy) == 0);
+
+  _device_acquire();
+  if (set_chip_mode(CHIPMODE_STBYMODE)) {
+    printk(KERN_WARNING "error switch to stand-by mode");
+  }
 
   free_irq(mrf_device->irq0, mrf_device);
   free_irq(mrf_device->irq1, mrf_device);
+  _device_release();
+
+  /* release all received frames */
+  spin_lock(&mrf_device->rx_queue_lock);
+  list_for_each_entry_safe(frame, tmp_frame, &mrf_device->rx_queue, list_item) {
+    list_del(&frame->list_item);
+    kfree(frame);
+  }
+  spin_unlock(&mrf_device->rx_queue_lock);
 
   module_put(THIS_MODULE);
 
@@ -619,6 +638,7 @@ static void receive_frame_work(struct work_struct *unused) {
   u8 access;
   u8 length_address[2];
   int status = 0;
+  int queue_size;
   struct mrf_payload *frame = 0;
 
   MRF_PRINT_DEBUG("receive_frame_work\n");
@@ -655,12 +675,34 @@ static void receive_frame_work(struct work_struct *unused) {
     goto finish;
   }
 
-  MRF_PRINT_DEBUG("frame (%d bytes) has been successfully received from %d \n",
-                  frame->size, frame->addr);
+  spin_lock(&mrf_device->rx_queue_lock);
+  list_add_tail(&frame->list_item, &mrf_device->rx_queue);
+
+  queue_size = atomic_inc_return(&mrf_device->rx_queue_size);
+  if (queue_size > MRF_MAX_RX_QUEUE) {
+    struct mrf_payload *dropped_frame = list_first_entry(&mrf_device->rx_queue, struct mrf_payload, list_item);
+    list_del(&dropped_frame->list_item);
+    kfree(dropped_frame);
+    queue_size = atomic_dec_return(&mrf_device->rx_queue_size);
+  }
+  spin_unlock(&mrf_device->rx_queue_lock);
+
+
+  if ((status = set_chip_mode(CHIPMODE_RX))) {
+    printk(KERN_WARNING "error switch to rrx mode: %d", status);
+    goto finish;
+  }
+
+  MRF_PRINT_DEBUG("frame (%d bytes) has been successfully received from %d, in queue = %d frames \n",
+                  frame->size, frame->addr, queue_size);
 
  finish:
   _device_release();
-  if (frame && status) kfree(frame);
+  if (frame && status) {
+    kfree(frame);
+  } else {
+    wake_up(&mrf_device->rx_wait_queue);
+  }
 }
 
 static void rx_switch_work(struct work_struct *unused) {
@@ -692,7 +734,7 @@ static void transfer_work(struct work_struct *unused) {
   while (queue_size) {
     MRF_PRINT_DEBUG("transfer_work start\n");
     spin_lock(&mrf_device->tx_queue_lock);
-    payload = list_last_entry(&mrf_device->tx_queue, struct mrf_payload, list_item);
+    payload = list_first_entry(&mrf_device->tx_queue, struct mrf_payload, list_item);
     list_del(&payload->list_item);
     spin_unlock(&mrf_device->tx_queue_lock);
 
@@ -1060,8 +1102,14 @@ static __init int mrf_init(void) {
   atomic_set(&mrf_dev->device_busy, 0);
   spin_lock_init(&mrf_dev->tx_queue_lock);
 
+  INIT_LIST_HEAD(&mrf_dev->rx_queue);
+  atomic_set(&mrf_dev->rx_queue_size, 0);
+  spin_lock_init(&mrf_dev->rx_queue_lock);
+
   init_waitqueue_head(&mrf_dev->tx_wait_queue);
+  init_waitqueue_head(&mrf_dev->rx_wait_queue);
   init_waitqueue_head(&mrf_dev->device_wait_queue);
+
   sema_init(&mrf_dev->driver_semaphore, 1);
   cdev_init(&mrf_dev->cdev, &mrf_fops);
   mrf_dev->cdev.owner = THIS_MODULE;

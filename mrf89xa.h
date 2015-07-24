@@ -19,6 +19,7 @@
 
 #define MRF_MAX_PAYLOAD 64
 #define MRF_MAX_TX_QUEUE 10
+#define MRF_MAX_RX_QUEUE 10
 
 typedef struct mrf_address {
   uint8_t node_id;
