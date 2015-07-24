@@ -368,8 +368,16 @@ static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *of
   atomic_dec(&mrf_device->rx_queue_size);
   spin_unlock(&mrf_device->rx_queue_lock);
 
+  status = __put_user(payload->addr, &frame->addr);
+  if (status) { goto finish; }
+
+  if (copy_to_user(&frame->data, payload->data, payload->size)) {
+     status = -EFAULT;
+     goto finish;
+  }
+
   /* all OK */
-  status = length;
+  status = payload->size + sizeof(((mrf_frame*)0)->addr);
 
  finish:
   if (payload) kfree(payload);
