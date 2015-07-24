@@ -510,19 +510,19 @@ static int initialize_registers(void) {
 
 /* assumption: device is already acquired */
 static void tx_timeout(unsigned long unused) {
+  int do_listen = 0;
   printk(KERN_WARNING "mrf: tx_timeout\n");
 
   spin_lock(&mrf_device->state_lock);
   mrf_device->state &= ~MRF_STATE_TRANSMITTING;
-  /* release device */
+  do_listen = mrf_device->state & MRF_STATE_LISTENING;
   spin_unlock(&mrf_device->state_lock);
+
   _device_release();
 
-  /*
-  if (!atomic_read(&mrf_device->tx_queue_size)) {
+  if (!atomic_read(&mrf_device->tx_queue_size) && do_listen) {
     queue_work(mrf_device->tx_worker, &rx_switcher);
   }
-  */
 }
 
 /* assumption: device is already acquired */
@@ -537,16 +537,17 @@ static irqreturn_t irq1_handler(int a, void *b) {
 
   spin_lock(&mrf_device->state_lock);
   if ( mrf_device->state & MRF_STATE_TRANSMITTING ) {
+    int do_listen = 0;
     mrf_device->state &= ~MRF_STATE_TRANSMITTING;
-    /* release device */
+    do_listen = mrf_device->state & MRF_STATE_LISTENING;
     spin_unlock(&mrf_device->state_lock);
+
     _device_release();
-    del_timer(&mrf_device->tx_timeout_timer);
-    /*
-    if (!atomic_read(&mrf_device->tx_queue_size)) {
+
+    if (!atomic_read(&mrf_device->tx_queue_size) && do_listen) {
       queue_work(mrf_device->tx_worker, &rx_switcher);
     }
-    */
+    del_timer(&mrf_device->tx_timeout_timer);
   } else {
     spin_unlock(&mrf_device->state_lock);
     printk(KERN_WARNING "mrf: irq1_handler is called with unknown state : 0x%X, ignoring ?\n",
@@ -588,6 +589,7 @@ static void _device_release(void) {
 
 static void rx_switch_work(struct work_struct *unused) {
   int status;
+  MRF_PRINT_DEBUG("rx_switch_work\n");
   _device_acquire();
 
   spin_lock(&mrf_device->state_lock);
@@ -598,6 +600,7 @@ static void rx_switch_work(struct work_struct *unused) {
   if ((status = set_chip_mode(CHIPMODE_STBYMODE))) {
     printk(KERN_WARNING "error switch to stand-by mode: %d", status);
   }
+  MRF_PRINT_DEBUG(" -> rx\n");
   if ((status = set_chip_mode(CHIPMODE_RX))) {
     printk(KERN_WARNING "error switch to rrx mode: %d", status);
   }
@@ -695,6 +698,7 @@ static int cmd_reset(int reinitialize) {
   state &= ~MRF_STATE_ADDRESSASSIGNED;
   state &= ~MRF_STATE_FREQASSIGNED;
   state &= ~MRF_STATE_TRANSMITTING;
+  state &= ~MRF_STATE_LISTENING;
   spin_lock(&mrf_device->state_lock);
   mrf_device->state = state;
   spin_unlock(&mrf_device->state_lock);
@@ -772,6 +776,14 @@ static int cmd_debug(unsigned long arg) {
   return transfer_data(dst, ARRAY_SIZE(data), data);
 }
 
+static int cmd_listen(void) {
+  spin_lock(&mrf_device->state_lock);
+  mrf_device->state &= ~MRF_STATE_LISTENING;
+  spin_unlock(&mrf_device->state_lock);
+  queue_work(mrf_device->tx_worker, &rx_switcher);
+  return 0;
+}
+
 static int cmd_setfreq(unsigned long arg) {
   int status;
   uint32_t value = cpu_to_be32(arg);
@@ -819,6 +831,9 @@ long mrf_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) 
     break;
   case MRF_IOC_SETPOWER:
     status = cmd_setpower((uint8_t) arg);
+    break;
+  case MRF_IOC_LISTEN:
+    status = cmd_listen();
     break;
   case MRF_IOC_DEBUG:
     status = cmd_debug(arg);

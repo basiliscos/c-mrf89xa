@@ -37,8 +37,9 @@ typedef struct mrf_frame {
 #define MRF_IOC_SETADDR  _IOW(MRF_IOC_MAGIC, 1, mrf_address)
 #define MRF_IOC_SETFREQ  _IO(MRF_IOC_MAGIC, 2)
 #define MRF_IOC_SETPOWER _IO(MRF_IOC_MAGIC, 3)
-#define MRF_IOC_DEBUG    _IO(MRF_IOC_MAGIC, 4)
-#define MRF_IOC_MAXNR    4
+#define MRF_IOC_LISTEN   _IO(MRF_IOC_MAGIC, 4)
+#define MRF_IOC_DEBUG    _IO(MRF_IOC_MAGIC, 5)
+#define MRF_IOC_MAXNR    5
 
 /* board setup */
 /*
@@ -64,7 +65,7 @@ typedef struct mrf_frame {
 #define MRF_STATE_ADDRESSASSIGNED (1 << 2)
 #define MRF_STATE_FREQASSIGNED    (1 << 3)
 #define MRF_STATE_TRANSMITTING    (1 << 4)
-#define MRF_STATE_RECEIVING       (1 << 5)
+#define MRF_STATE_LISTENING       (1 << 5)
 
 #ifdef MRF_DEBUG
 #define MRF_PRINT_DEBUG(fmt, args...) printk( KERN_INFO "mrf: " fmt, ## args)
