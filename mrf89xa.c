@@ -281,7 +281,7 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
   }
 
   /* check input data */
-  data_size = length - sizeof(((mrf_frame*)0)->dest);
+  data_size = length - sizeof(((mrf_frame*)0)->addr);
   if (data_size <= 0) {
     /* nothing to send? */
     printk(KERN_WARNING "mrf: write: wrong data size %d)\n", data_size);
@@ -336,16 +336,45 @@ static ssize_t mrf_write(struct file *filp, const char *buff, size_t length, lof
 }
 
 static ssize_t mrf_read(struct file *filp, char *buff, size_t length, loff_t *offset) {
-  int bytes_read = 0;
+  int status= 0;
+  mrf_frame *frame;
+  struct mrf_payload *payload = NULL;
   MRF_PRINT_DEBUG("reading from device\n");
 
-  /* if (length && mrf_dev->counter < MRFSPI_MAX_COUNTER) { */
-  /*   put_user('a', buff++); */
-  /*   length--; */
-  /*   bytes_read++; */
-  /*   mrf_dev->counter++; */
-  /* } */
-  return bytes_read;
+  down(&mrf_device->driver_semaphore);
+  /* queue size could extrenally be decreased only */
+  if ((filp->f_flags & O_NONBLOCK) && (atomic_read(&mrf_device->rx_queue_size) == 0)) {
+    status = -EAGAIN;
+    goto finish;
+  }
+
+  /* check input data */
+  if (length != sizeof(mrf_frame)) {
+    printk(KERN_WARNING "mrf: read: wrong data size %d)\n", length);
+    status = -EINVAL;
+    goto finish;
+  }
+  if (!access_ok(VERIFY_WRITE, buff, length)) {
+    status = -EFAULT;
+    goto finish;
+  }
+  frame = (mrf_frame*) buff;
+
+  wait_event(mrf_device->rx_wait_queue, atomic_read(&mrf_device->rx_queue_size) > 0);
+
+  spin_lock(&mrf_device->rx_queue_lock);
+  payload = list_first_entry(&mrf_device->rx_queue, struct mrf_payload, list_item);
+  list_del(&payload->list_item);
+  atomic_dec(&mrf_device->rx_queue_size);
+  spin_unlock(&mrf_device->rx_queue_lock);
+
+  /* all OK */
+  status = length;
+
+ finish:
+  if (payload) kfree(payload);
+  up(&mrf_device->driver_semaphore);
+  return status;
 }
 
 static int mrf_dump_stats(struct seq_file *m, void *v){

@@ -28,7 +28,7 @@ typedef struct mrf_address {
 
 
 typedef struct mrf_frame {
-  uint8_t dest;
+  uint8_t addr;
   uint8_t data[MRF_MAX_PAYLOAD];
 } mrf_frame;
 
