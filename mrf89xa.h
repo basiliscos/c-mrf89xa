@@ -64,7 +64,7 @@ typedef struct mrf_frame {
 #define MRF_STATE_ADDRESSASSIGNED (1 << 2)
 #define MRF_STATE_FREQASSIGNED    (1 << 3)
 #define MRF_STATE_TRANSMITTING    (1 << 4)
-#define MRF_STATE_DEVICEBUSY      (1 << 5)
+#define MRF_STATE_RECEIVING       (1 << 5)
 
 #ifdef MRF_DEBUG
 #define MRF_PRINT_DEBUG(fmt, args...) printk( KERN_INFO "mrf: " fmt, ## args)

@@ -50,6 +50,7 @@ static void _device_acquire(void);
 static void _device_release(void);
 
 static void transfer_work(struct work_struct *work);
+static void rx_switch_work(struct work_struct *work);
 static int transfer_data(u8 address, u8 length, u8* data);
 
 
@@ -68,6 +69,7 @@ struct mrf_dev {
   struct cdev cdev;
   spinlock_t state_lock;
   uint32_t state;
+  atomic_t device_busy;
 
   int irq0;
   int irq1;
@@ -81,6 +83,7 @@ struct mrf_dev {
   struct gpio_desc *reset_pin;
   struct proc_dir_entry* proc_file;
   wait_queue_head_t tx_wait_queue;
+  wait_queue_head_t device_wait_queue;
 
   spinlock_t tx_queue_lock;
   atomic_t tx_queue_size;
@@ -100,6 +103,8 @@ struct mrf_dev *mrf_device = NULL;
 static const char* mrf_device_name = MRFSPI_DRV_NAME;
 
 DECLARE_WORK(tx_processor, transfer_work);
+DECLARE_WORK(rx_switcher, rx_switch_work);
+
 
 static u8 por_register_values[] = { 0x28, 0x88, 0x03, 0x07, 0x0C, 0x0F };
 
@@ -214,25 +219,23 @@ static int mrf_open(struct inode *inode, struct file *filp) {
 }
 
 static int mrf_release(struct inode *inode, struct file *filp) {
-  int device_is_ready = 0;
-  MRF_PRINT_DEBUG("release device\n");
+  MRF_PRINT_DEBUG("release device, queue_size = %d\n", atomic_read(&mrf_device->tx_queue_size));
   down(&mrf_device->driver_semaphore);
 
   /* wait until tx queue be empty */
+  MRF_PRINT_DEBUG("release device, 1\n");
   wait_event(mrf_device->tx_wait_queue, atomic_read(&mrf_device->tx_queue_size) == 0);
   /* wait until all frames will be actually sent */
 
-  while(!device_is_ready) {
-    spin_lock(&mrf_device->state_lock);
-    device_is_ready = !(mrf_device->state & MRF_STATE_DEVICEBUSY);
-    spin_unlock(&mrf_device->state_lock);
-  }
+  MRF_PRINT_DEBUG("release device, 2\n");
+  wait_event(mrf_device->device_wait_queue, atomic_read(&mrf_device->device_busy) == 0);
 
   free_irq(mrf_device->irq0, mrf_device);
   free_irq(mrf_device->irq1, mrf_device);
 
   module_put(THIS_MODULE);
 
+  MRF_PRINT_DEBUG("release device, 4\n");
   spin_lock(&mrf_device->state_lock);
   mrf_device->state &= ~(MRF_STATE_DEVICEOPENED);
   spin_unlock(&mrf_device->state_lock);
@@ -512,10 +515,14 @@ static void tx_timeout(unsigned long unused) {
   spin_lock(&mrf_device->state_lock);
   mrf_device->state &= ~MRF_STATE_TRANSMITTING;
   /* release device */
-  mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
   spin_unlock(&mrf_device->state_lock);
+  _device_release();
 
-  wake_up(&mrf_device->tx_wait_queue);
+  /*
+  if (!atomic_read(&mrf_device->tx_queue_size)) {
+    queue_work(mrf_device->tx_worker, &rx_switcher);
+  }
+  */
 }
 
 /* assumption: device is already acquired */
@@ -532,10 +539,14 @@ static irqreturn_t irq1_handler(int a, void *b) {
   if ( mrf_device->state & MRF_STATE_TRANSMITTING ) {
     mrf_device->state &= ~MRF_STATE_TRANSMITTING;
     /* release device */
-    mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
     spin_unlock(&mrf_device->state_lock);
+    _device_release();
     del_timer(&mrf_device->tx_timeout_timer);
-    wake_up(&mrf_device->tx_wait_queue);
+    /*
+    if (!atomic_read(&mrf_device->tx_queue_size)) {
+      queue_work(mrf_device->tx_worker, &rx_switcher);
+    }
+    */
   } else {
     spin_unlock(&mrf_device->state_lock);
     printk(KERN_WARNING "mrf: irq1_handler is called with unknown state : 0x%X, ignoring ?\n",
@@ -547,26 +558,51 @@ static irqreturn_t irq1_handler(int a, void *b) {
 
 static int set_chip_mode(u8 mode) {
   u8 value;
+  int status;
+  //MRF_PRINT_DEBUG("chimode to -> %d\n", mode);
 
   value = read_register(REG_GCON) & (~CHIPMODE_MASK);
+  //MRF_PRINT_DEBUG("chimode was (cleared) %d \n", value);
   value |= mode;
-  return write_register(REG_GCON, value);
+  //MRF_PRINT_DEBUG("chimode new %d \n", value);
+  status = write_register(REG_GCON, value);
+  //MRF_PRINT_DEBUG("chimode status %d\n", status);
+  return status;
 }
 
 static void _device_acquire(void) {
   int acquired = 0;
+  wait_event(mrf_device->device_wait_queue, atomic_read(&mrf_device->device_busy) == 0);
   while (!acquired) {
     spin_lock(&mrf_device->state_lock);
-    acquired = !(mrf_device->state & MRF_STATE_DEVICEBUSY);
-    if (acquired) mrf_device->state |= MRF_STATE_DEVICEBUSY;
+    acquired = atomic_read(&mrf_device->device_busy) == 0;
+    if (acquired) atomic_inc(&mrf_device->device_busy);
     spin_unlock(&mrf_device->state_lock);
   }
 }
 
 static void _device_release(void) {
+  atomic_dec(&mrf_device->device_busy);
+  wake_up(&mrf_device->device_wait_queue);
+}
+
+static void rx_switch_work(struct work_struct *unused) {
+  int status;
+  _device_acquire();
+
   spin_lock(&mrf_device->state_lock);
-  mrf_device->state &= ~MRF_STATE_DEVICEBUSY;
+  mrf_device->state &= ~MRF_STATE_TRANSMITTING;
   spin_unlock(&mrf_device->state_lock);
+
+  MRF_PRINT_DEBUG(" -> stand_by\n");
+  if ((status = set_chip_mode(CHIPMODE_STBYMODE))) {
+    printk(KERN_WARNING "error switch to stand-by mode: %d", status);
+  }
+  if ((status = set_chip_mode(CHIPMODE_RX))) {
+    printk(KERN_WARNING "error switch to rrx mode: %d", status);
+  }
+
+  _device_release();
 }
 
 static void transfer_work(struct work_struct *unused) {
@@ -582,11 +618,16 @@ static void transfer_work(struct work_struct *unused) {
     spin_unlock(&mrf_device->tx_queue_lock);
 
     status = transfer_data(payload->dest, payload->size, payload->data);
+    if (status) {
+      printk(KERN_WARNING "mrf: error transfer data: %d\n", status);
+    }
     kfree(payload);
 
     queue_size = atomic_dec_return(&mrf_device->tx_queue_size);
-    MRF_PRINT_DEBUG("transfer_work end\n");
+    MRF_PRINT_DEBUG("transfer_work end, queue_size = %d\n", queue_size);
+    wake_up(&mrf_device->tx_wait_queue);
   }
+
 }
 
 
@@ -596,6 +637,7 @@ static int transfer_data(u8 address, u8 length, u8* data) {
 
   /* will be released either in irq handler or tx-timeout callback */
   _device_acquire();
+
   MRF_PRINT_DEBUG("transfer_data (%d bytes) -> sleep_mode\n", length);
   access = read_register(REG_FCRC) & (~FIFO_STBY_ACCESS_MASK);
 
@@ -614,13 +656,14 @@ static int transfer_data(u8 address, u8 length, u8* data) {
   if ((status = write_register(REG_FTXRXI, default_register_values[REG_FTXRXI] | IRQ1_FIFO_OVERRUN_CLEAR))) {
     goto finish;
   }
-  /* send to broadcast address some dummy data*/
-  if ((status = write_fifo(address, length, data))) {
-    goto finish;
-  }
+
   spin_lock(&mrf_device->state_lock);
   mrf_device->state |= MRF_STATE_TRANSMITTING;
   spin_unlock(&mrf_device->state_lock);
+
+  if ((status = write_fifo(address, length, data))) {
+    goto finish;
+  }
   if ((status = set_chip_mode(CHIPMODE_TX))) {
     goto finish;
   }
@@ -920,9 +963,11 @@ static __init int mrf_init(void) {
   /* initialize mrf device */
   INIT_LIST_HEAD(&mrf_dev->tx_queue);
   atomic_set(&mrf_dev->tx_queue_size, 0);
+  atomic_set(&mrf_dev->device_busy, 0);
   spin_lock_init(&mrf_dev->tx_queue_lock);
 
   init_waitqueue_head(&mrf_dev->tx_wait_queue);
+  init_waitqueue_head(&mrf_dev->device_wait_queue);
   sema_init(&mrf_dev->driver_semaphore, 1);
   cdev_init(&mrf_dev->cdev, &mrf_fops);
   mrf_dev->cdev.owner = THIS_MODULE;
