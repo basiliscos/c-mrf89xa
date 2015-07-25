@@ -83,7 +83,7 @@ typedef struct mrf_frame {
 /* 6 MHz */
 #define MRFSPI_CONFIG_SPEED (6000000*2)
 /* 1 MHz */
-#define MRFSPI_DATA_SPEED (1000000*2)
+#define MRFSPI_DATA_SPEED (900000)
 
 
 #define CMD_READ_REGISTER(N) (0x40 | (N << 1))
